@@ -214,7 +214,6 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message += f"   📅 {day_name} {date_obj.strftime('%d/%m/%Y')} ore {class_time}\n"
             message += f"   ⏰ Prenoterò il {booking_date.strftime('%d/%m/%Y alle %H:%M')}\n\n"
         
-        message += "💡 Usa /cancella <ID> per cancellare"
         
         await update.message.reply_text(message)
         
@@ -235,8 +234,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   Il bot prenoterà automaticamente 72h prima.\n\n"
         "/lista - Vedi tutte le prenotazioni programmate\n"
         "   Mostra cosa hai in programma.\n\n"
-        "/cancella <ID> - Cancella una prenotazione\n"
-        "   Esempio: /cancella 5\n\n"
         "⏰ ORARI:\n"
         "Il bot è attivo dalle 8:00 alle 21:00 ogni giorno.\n"
         "Controlla ogni ora se ci sono prenotazioni da fare.\n\n"
