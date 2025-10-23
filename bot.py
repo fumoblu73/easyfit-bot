@@ -40,7 +40,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 Comandi disponibili:\n"
         f"/prenota - Programma una nuova prenotazione\n"
         f"/lista - Vedi prenotazioni programmate\n"
-        f"/cancella - Cancella prenotazione\n"
         f"/help - Guida completa"
     )
 
