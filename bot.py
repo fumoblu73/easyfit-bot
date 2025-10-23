@@ -1,38 +1,11 @@
-Perfetto! 🎉 Ottimo lavoro! Hai caricato il primo file con successo!
-
-✅ Situazione Attuale
-Hai già 2 file:
-
-✅ README.md (creato automaticamente)
-✅ requirements.txt (appena creato da te)
-
-
-📄 FILE 2: bot.py
-Questo è il file principale con tutto il codice del bot.
-
-1️⃣ Crea Nuovo File
-Clicca di nuovo su:
-Add file → Create new file
-```
-
----
-
-### 2️⃣ Nome del File
-
-Scrivi:
-```
-bot.py
-
-3️⃣ Contenuto del File
-⚠️ ATTENZIONE: Questo file è LUNGO. Devi copiare tutto!
-Nell'area di testo, copia e incolla TUTTO questo codice:
-pythonimport os
+import os
 import logging
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import psycopg2
 from apscheduler.schedulers.background import BackgroundScheduler
+import asyncio
 
 # Configurazione logging
 logging.basicConfig(
@@ -46,6 +19,9 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 DATABASE_URL = os.getenv('DATABASE_URL')
 EASYFIT_EMAIL = os.getenv('EASYFIT_EMAIL')
 EASYFIT_PASSWORD = os.getenv('EASYFIT_PASSWORD')
+
+# Variabile globale per l'application
+app_instance = None
 
 # Connessione database
 def get_db_connection():
@@ -120,7 +96,7 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Mostra orari disponibili
     keyboard = [
-        [InlineKeyboardButton("🕐 10:00", callback_data='time_10:00')],
+        [InlineKeyboardButton("🕙 10:00", callback_data='time_10:00')],
         [InlineKeyboardButton("🕕 18:00", callback_data='time_18:00')],
         [InlineKeyboardButton("🕖 19:00", callback_data='time_19:00')],
     ]
@@ -266,11 +242,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Il bot è attivo dalle 8:00 alle 21:00 ogni giorno.\n"
         "Controlla ogni ora se ci sono prenotazioni da fare.\n\n"
         "📲 NOTIFICHE:\n"
-        "Riceverai un messaggio quando il bot prenota per te!"
+        "Riceverai un messaggio quando il bot prenota per te!\n\n"
+        "❓ Problemi? Scrivi a: cinzia.caia@hotmail.it"
     )
 
 # Funzione che controlla e prenota (chiamata ogni ora)
-def check_and_book():
+async def check_and_book():
     """Controlla se ci sono prenotazioni da fare"""
     
     # Controlla se siamo nell'orario attivo (8-21)
@@ -314,8 +291,7 @@ def check_and_book():
             logger.info(f"📝 Prenotazione {booking_id}: {class_name} per {class_date} {class_time}")
             
             # PLACEHOLDER: Qui andrà la logica vera di prenotazione su EasyFit
-            # Per ora simuliamo successo
-            success = True
+            success = simulate_booking(class_name, class_date, class_time)
             
             if success:
                 # Aggiorna status nel database
@@ -329,6 +305,14 @@ def check_and_book():
                 )
                 conn.commit()
                 
+                # Invia notifica Telegram
+                await send_telegram_notification(
+                    user_id, 
+                    class_name, 
+                    class_date, 
+                    class_time
+                )
+                
                 logger.info(f"✅ Prenotazione {booking_id} completata!")
             else:
                 logger.error(f"❌ Prenotazione {booking_id} fallita!")
@@ -339,12 +323,42 @@ def check_and_book():
     except Exception as e:
         logger.error(f"❌ Errore nel controllo prenotazioni: {e}")
 
+def simulate_booking(class_name, class_date, class_time):
+    """PLACEHOLDER: Simula prenotazione"""
+    logger.info(f"🔄 [SIMULAZIONE] Prenotazione {class_name} per {class_date} {class_time}")
+    return True
+
+async def send_telegram_notification(user_id, class_name, class_date, class_time):
+    """Invia notifica Telegram all'utente"""
+    try:
+        date_obj = datetime.strptime(str(class_date), '%Y-%m-%d')
+        day_name = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'][date_obj.weekday()]
+        
+        message = (
+            f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
+            f"📚 {class_name}\n"
+            f"📅 {day_name} {date_obj.strftime('%d/%m/%Y')}\n"
+            f"🕐 Ore {class_time}\n\n"
+            f"Ci vediamo alla lezione! 💪"
+        )
+        
+        await app_instance.bot.send_message(chat_id=user_id, text=message)
+        logger.info(f"📲 Notifica inviata a {user_id}")
+    except Exception as e:
+        logger.error(f"❌ Errore invio notifica: {e}")
+
+def scheduler_job():
+    """Wrapper sincrono per lo scheduler"""
+    asyncio.run(check_and_book())
+
 # Funzione principale
 def main():
     """Avvia il bot"""
+    global app_instance
     
     # Crea applicazione
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+    app_instance = application
     
     # Registra handlers
     application.add_handler(CommandHandler("start", start))
@@ -360,9 +374,9 @@ def main():
     # Avvia scheduler (controlla ogni ora)
     scheduler = BackgroundScheduler()
     scheduler.add_job(
-        check_and_book,
+        scheduler_job,
         'cron',
-        hour='8-21',  # Solo dalle 8 alle 21
+        hour='8-21',
         minute=0
     )
     scheduler.start()
@@ -374,6 +388,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-```
-
----
