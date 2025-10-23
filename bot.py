@@ -372,13 +372,13 @@ def main():
     application.add_handler(CallbackQueryHandler(time_selected, pattern="^time_"))
     
     # Avvia scheduler (controlla ogni 2 minuti)
-scheduler = BackgroundScheduler()
-scheduler.add_job(
-    scheduler_job,
-    'cron',
-    hour='8-21',      # Solo dalle 8 alle 21
-    minute='*/2'      # Ogni 2 minuti
-)
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        scheduler_job,
+        'cron',
+        hour='8-21',      # Solo dalle 8 alle 21
+        minute='*/2'      # Ogni 2 minuti
+    )
     scheduler.start()
     
     logger.info("🚀 Bot avviato! Attivo dalle 8 alle 21.")
