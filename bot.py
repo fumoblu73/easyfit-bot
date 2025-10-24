@@ -271,132 +271,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🔍 Recupero calendario lezioni da EasyFit...\n"
-        "⏳ Attendi qualche secondo..."
-    )
+    """
+    Versione semplificata: usa lista lezioni predefinite
+    La verifica su EasyFit verrà fatta solo al momento della prenotazione (72h prima)
+    """
     
-    try:
-        logger.info(f"📱 Utente {update.effective_user.id} ha richiesto /prenota")
-        
-        # Login e recupero calendario reale
-        logger.info("🔐 Tentativo login EasyFit...")
-        session, session_id = easyfit_login()
-        
-        if not session or not session_id:
-            logger.error("❌ Login fallito - session o session_id mancante")
-            await update.message.reply_text(
-                "❌ Errore di connessione a EasyFit.\n"
-                "Riprova tra qualche minuto."
-            )
-            return
-        
-        logger.info(f"✅ Login riuscito - SessionID: {session_id[:20]}...")
-        
-        # Ottieni calendario prossimi 7 giorni
-        today = datetime.now()
-        start_date = today.strftime("%Y-%m-%d")
-        end_date = (today + timedelta(days=7)).strftime("%Y-%m-%d")
-        
-        logger.info(f"📅 Richiesta calendario: {start_date} - {end_date}")
-        
-        url = f"{EASYFIT_BASE_URL}/nox/v2/bookableitems/courses/with-canceled"
-        params = {
-            "startDate": start_date,
-            "endDate": end_date,
-            "employeeIds": "",
-            "organizationUnitIds": ORGANIZATION_UNIT_ID,
-            "includeWaitingList": "true"
-        }
-        
-        # Retry logic: prova fino a 3 volte
-        max_retries = 3
-        response = None
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"🌐 Chiamata GET (tentativo {attempt + 1}/{max_retries}): {url}")
-                response = session.get(
-                    url, 
-                    params=params, 
-                    headers=get_session_headers(session_id),
-                    timeout=10
-                )
-                logger.info(f"📡 Response status: {response.status_code}")
-                
-                if response.status_code == 200:
-                    break  # Successo!
-                    
-                logger.warning(f"⚠️ Tentativo {attempt + 1} fallito con status {response.status_code}")
-                
-                if attempt < max_retries - 1:
-                    import time
-                    time.sleep(2)  # Aspetta 2 secondi prima di riprovare
-                    
-            except Exception as e:
-                logger.error(f"❌ Errore richiesta (tentativo {attempt + 1}): {e}")
-                if attempt < max_retries - 1:
-                    import time
-                    time.sleep(2)
-        
-        if not response or response.status_code != 200:
-            error_msg = response.text[:200] if response else "Nessuna risposta"
-            logger.error(f"❌ Errore API dopo {max_retries} tentativi: {error_msg}")
-            await update.message.reply_text(
-                "❌ Errore nel recuperare il calendario da EasyFit.\n"
-                f"Il server ha risposto con errore dopo {max_retries} tentativi.\n\n"
-                "Possibili cause:\n"
-                "• Il server EasyFit è temporaneamente non disponibile\n"
-                "• Manutenzione in corso\n\n"
-                "💡 Riprova tra qualche minuto o verifica che l'app web funzioni."
-            )
-            return
-        
-        courses = response.json()
-        logger.info(f"📊 Ricevuti {len(courses)} corsi dal calendario")
-        
-        # Estrai nomi corsi unici
-        course_names = set()
-        for course in courses:
-            course_names.add(course['name'])
-        
-        logger.info(f"📚 Trovati {len(course_names)} tipi di lezioni: {sorted(course_names)}")
-        
-        if not course_names:
-            logger.warning("⚠️ Nessuna lezione trovata nel calendario")
-            await update.message.reply_text(
-                "ℹ️ Nessuna lezione disponibile nei prossimi 7 giorni."
-            )
-            return
-        
-        # Salva calendario nel context per uso successivo
-        context.user_data['calendar'] = courses
-        context.user_data['session_id'] = session_id
-        
-        # Crea bottoni con nomi corsi reali
-        keyboard = []
-        for course_name in sorted(course_names):
-            keyboard.append([InlineKeyboardButton(
-                f"📚 {course_name}", 
-                callback_data=f'class_{course_name}'
-            )])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        logger.info(f"✅ Invio {len(course_names)} lezioni all'utente")
-        await update.message.reply_text(
-            f"✅ Trovate {len(course_names)} tipologie di lezioni!\n\n"
-            f"📚 Che lezione vuoi prenotare?",
-            reply_markup=reply_markup
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Errore CRITICO in prenota: {type(e).__name__}: {str(e)}", exc_info=True)
-        await update.message.reply_text(
-            f"❌ Si è verificato un errore.\n"
-            f"Tipo: {type(e).__name__}\n"
-            f"Riprova con /prenota"
-        )
+    logger.info(f"📱 Utente {update.effective_user.id} ha richiesto /prenota")
+    
+    # Lista lezioni comuni EasyFit (aggiungine se ne conosci altre)
+    lezioni_disponibili = [
+        "Pilates",
+        "Yoga",
+        "Spinning",
+        "CrossFit",
+        "Zumba",
+        "GAG",
+        "Total Body",
+        "Functional Training",
+        "Aerobica",
+        "Step"
+    ]
+    
+    # Crea bottoni
+    keyboard = []
+    for lezione in lezioni_disponibili:
+        keyboard.append([InlineKeyboardButton(
+            f"📚 {lezione}", 
+            callback_data=f'class_{lezione}'
+        )])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "📚 Che lezione vuoi prenotare?\n\n"
+        "💡 Il bot cercherà automaticamente la lezione su EasyFit\n"
+        "quando arriverà il momento di prenotare (72h prima).",
+        reply_markup=reply_markup
+    )
 
 
 async def class_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -406,33 +317,15 @@ async def class_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     class_name = query.data.split('_', 1)[1]  # Supporta nomi con spazi
     context.user_data['class_name'] = class_name
     
-    # Recupera calendario
-    calendar = context.user_data.get('calendar', [])
-    
-    # Trova date disponibili per questa classe
-    available_dates = set()
-    
-    for course in calendar:
-        if course['name'] == class_name:
-            for slot in course.get('slots', []):
-                # Estrai data (formato: 2025-10-27T10:30:00...)
-                date_str = slot['startDateTime'][:10]  # YYYY-MM-DD
-                available_dates.add(date_str)
-    
-    if not available_dates:
-        await query.edit_message_text(
-            f"❌ Nessuna data disponibile per {class_name}.\n\n"
-            f"Usa /prenota per riprovare."
-        )
-        return
-    
-    # Crea bottoni con date reali disponibili
+    # Mostra prossimi 7 giorni
     keyboard = []
+    today = datetime.now()
     
-    for date_str in sorted(available_dates)[:7]:  # Max 7 giorni
-        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-        day_name = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'][date_obj.weekday()]
-        date_display = date_obj.strftime('%d/%m')
+    for i in range(7):
+        date = today + timedelta(days=i)
+        day_name = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'][date.weekday()]
+        date_str = date.strftime('%Y-%m-%d')
+        date_display = date.strftime('%d/%m')
         button_text = f"{day_name} {date_display}"
         keyboard.append([InlineKeyboardButton(
             button_text, 
@@ -443,7 +336,7 @@ async def class_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(
         f"📅 Hai scelto: {class_name}\n\n"
-        f"Quale giorno? ({len(available_dates)} disponibili)",
+        f"Quale giorno?",
         reply_markup=reply_markup
     )
 
@@ -455,35 +348,16 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date_str = query.data.split('_')[1]
     context.user_data['date'] = date_str
     
-    # Recupera calendario e filtra per classe e data
-    calendar = context.user_data.get('calendar', [])
     class_name = context.user_data.get('class_name')
     
-    # Trova orari disponibili per questa classe e data
-    available_times = set()
+    # Usa orari comuni (il bot verificherà disponibilità al momento della prenotazione)
+    orari_comuni = ["10:00", "18:00", "19:00", "20:00"]
     
-    for course in calendar:
-        if course['name'] == class_name:
-            for slot in course.get('slots', []):
-                slot_date = slot['startDateTime'][:10]  # YYYY-MM-DD
-                if slot_date == date_str:
-                    # Estrai ora (formato: 2025-10-27T10:30:00...)
-                    time_str = slot['startDateTime'][11:16]  # HH:MM
-                    available_times.add(time_str)
-    
-    if not available_times:
-        await query.edit_message_text(
-            f"❌ Nessun orario disponibile per {class_name} in questa data.\n\n"
-            f"Usa /prenota per riprovare."
-        )
-        return
-    
-    # Crea bottoni con orari reali
+    # Crea bottoni con orari
     keyboard = []
-    for time in sorted(available_times):
-        emoji = "🕐"
+    for time in orari_comuni:
         keyboard.append([InlineKeyboardButton(
-            f"{emoji} {time}", 
+            f"🕐 {time}", 
             callback_data=f'time_{time}'
         )])
     
@@ -495,7 +369,8 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"📚 {class_name}\n"
         f"📅 {day_name} {date_obj.strftime('%d/%m/%Y')}\n\n"
-        f"🕐 Scegli l'orario ({len(available_times)} disponibili):",
+        f"🕐 Che orario?\n\n"
+        f"💡 Il bot verificherà la disponibilità al momento della prenotazione (72h prima).",
         reply_markup=reply_markup
     )
 
