@@ -305,19 +305,50 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "startDate": start_date,
             "endDate": end_date,
             "employeeIds": "",
-            "organizationUnitIds": ORGANIZATION_UNIT_ID
+            "organizationUnitIds": ORGANIZATION_UNIT_ID,
+            "includeWaitingList": "true"
         }
         
-        logger.info(f"🌐 Chiamata GET: {url}")
-        response = session.get(url, params=params, headers=get_session_headers(session_id))
-        logger.info(f"📡 Response status: {response.status_code}")
+        # Retry logic: prova fino a 3 volte
+        max_retries = 3
+        response = None
         
-        if response.status_code != 200:
-            logger.error(f"❌ Errore API: {response.status_code} - {response.text[:200]}")
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🌐 Chiamata GET (tentativo {attempt + 1}/{max_retries}): {url}")
+                response = session.get(
+                    url, 
+                    params=params, 
+                    headers=get_session_headers(session_id),
+                    timeout=10
+                )
+                logger.info(f"📡 Response status: {response.status_code}")
+                
+                if response.status_code == 200:
+                    break  # Successo!
+                    
+                logger.warning(f"⚠️ Tentativo {attempt + 1} fallito con status {response.status_code}")
+                
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(2)  # Aspetta 2 secondi prima di riprovare
+                    
+            except Exception as e:
+                logger.error(f"❌ Errore richiesta (tentativo {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(2)
+        
+        if not response or response.status_code != 200:
+            error_msg = response.text[:200] if response else "Nessuna risposta"
+            logger.error(f"❌ Errore API dopo {max_retries} tentativi: {error_msg}")
             await update.message.reply_text(
-                "❌ Errore nel recuperare il calendario.\n"
-                f"Codice errore: {response.status_code}\n"
-                "Riprova tra qualche minuto."
+                "❌ Errore nel recuperare il calendario da EasyFit.\n"
+                f"Il server ha risposto con errore dopo {max_retries} tentativi.\n\n"
+                "Possibili cause:\n"
+                "• Il server EasyFit è temporaneamente non disponibile\n"
+                "• Manutenzione in corso\n\n"
+                "💡 Riprova tra qualche minuto o verifica che l'app web funzioni."
             )
             return
         
