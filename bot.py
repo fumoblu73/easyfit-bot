@@ -591,13 +591,13 @@ def main():
     application.add_handler(CallbackQueryHandler(date_selected, pattern="^date_"))
     application.add_handler(CallbackQueryHandler(time_selected, pattern="^time_"))
     
-    # Avvia scheduler (controlla ogni ora)
+    # Avvia scheduler (controlla ogni 2 minuti dalle 8 alle 21)
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         lambda: check_and_book(application),
         'cron',
         hour='8-21',
-        minute=0
+        minute='*/2'  # Ogni 2 minuti
     )
     scheduler.start()
     
