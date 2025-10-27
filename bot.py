@@ -111,14 +111,31 @@ def get_calendar_courses(start_date, end_date, session=None):
             "organizationUnitIds": ORGANIZATION_UNIT_ID
         }
         
-        # Headers necessari
+        # Estrai sessionId dai cookie della sessione
+        session_id = None
+        for cookie in session.cookies:
+            if cookie.name == 'sessionId':
+                session_id = cookie.value
+                break
+        
+        # Headers necessari con cookie esplicito
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "it-IT,it;q=0.9",
             "Origin": "https://app-easyfitpalestre.it",
-            "Referer": f"https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course"
+            "Referer": f"https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
+            "x-tenant": "easyfit",
+            "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
+            "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
+            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
         }
+        
+        # Aggiungi cookie se presente
+        if session_id:
+            headers["Cookie"] = f"sessionId={session_id}"
+            logger.info(f"🔑 Uso sessionId: {session_id[:20]}...")
         
         response = session.get(url, params=params, headers=headers, timeout=15)
         
