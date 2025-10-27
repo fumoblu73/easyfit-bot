@@ -7,6 +7,8 @@ import psycopg2
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import base64
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Configurazione logging
 logging.basicConfig(
@@ -613,6 +615,40 @@ def check_and_book(application):
         logger.error(f"❌ Errore nel controllo prenotazioni: {e}")
 
 
+# =============================================================================
+# HEALTH CHECK SERVER (per Render.com)
+# =============================================================================
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Handler per health check HTTP (necessario per Render.com)"""
+    
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'Bot EasyFit is running OK')
+    
+    def log_message(self, format, *args):
+        # Silenzioso - non logga ogni richiesta
+        pass
+
+
+def start_health_server():
+    """
+    Avvia server HTTP su porta specifica per Render.com
+    Questo risolve l'errore "Port scan timeout" su Render
+    """
+    port = int(os.environ.get('PORT', 10000))
+    
+    try:
+        server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        logger.info(f"🌐 Health check server avviato su porta {port}")
+    except Exception as e:
+        logger.error(f"❌ Errore avvio health server: {e}")
+
+
 def main():
     """Avvia il bot"""
     
@@ -639,6 +675,9 @@ def main():
         minute='*/2'  # Ogni 2 minuti
     )
     scheduler.start()
+    
+    # Avvia health check server per Render
+    start_health_server()
     
     logger.info("="*60)
     logger.info("🚀 BOT AVVIATO CON PRENOTAZIONE REALE EASYFIT!")
