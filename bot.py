@@ -40,12 +40,34 @@ def easyfit_login():
         logger.info("🔐 Tentativo login EasyFit...")
         
         url = f"{EASYFIT_BASE_URL}/login"
+        
+        # Crea Basic Auth header
+        import base64
+        credentials = f"{EASYFIT_EMAIL}:{EASYFIT_PASSWORD}"
+        basic_auth = base64.b64encode(credentials.encode()).decode()
+        
+        # Headers completi richiesti da EasyFit
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "Accept-Language": "it-IT,it;q=0.9",
+            "Authorization": f"Basic {basic_auth}",
+            "Origin": "https://app-easyfitpalestre.it",
+            "Referer": "https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+            "x-tenant": "easyfit",
+            "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
+            "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
+            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
+        }
+        
         payload = {
             "username": EASYFIT_EMAIL,
             "password": EASYFIT_PASSWORD
         }
         
-        response = requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
