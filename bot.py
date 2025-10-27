@@ -479,13 +479,140 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message += f"   📅 {day_name} {date_obj.strftime('%d/%m/%Y')} ore {class_time}\n"
             message += f"   ⏰ Prenoterò il {booking_date.strftime('%d/%m/%Y alle %H:%M')}\n\n"
         
-        message += "💡 Usa /cancella <ID> per cancellare"
+        message += "💡 Usa /cancella per cancellare una prenotazione"
         
         await update.message.reply_text(message)
         
     except Exception as e:
         logger.error(f"Errore recupero prenotazioni: {e}")
         await update.message.reply_text("❌ Errore nel recuperare le prenotazioni.")
+
+
+async def cancella(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancella una prenotazione (con interfaccia a bottoni)"""
+    user_id = str(update.effective_user.id)
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Recupera prenotazioni pending
+        cur.execute(
+            """
+            SELECT id, class_name, class_date, class_time
+            FROM bookings
+            WHERE user_id = %s AND status = 'pending'
+            ORDER BY class_date, class_time
+            """,
+            (user_id,)
+        )
+        
+        bookings = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        if not bookings:
+            await update.message.reply_text(
+                "📋 Non hai prenotazioni da cancellare.\n\n"
+                "Usa /prenota per programmarne una!"
+            )
+            return
+        
+        # Crea bottoni per ogni prenotazione
+        keyboard = []
+        for booking in bookings:
+            booking_id, class_name, class_date, class_time = booking
+            date_obj = datetime.strptime(str(class_date), '%Y-%m-%d')
+            day_name = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'][date_obj.weekday()]
+            
+            button_text = f"#{booking_id} - {class_name} - {day_name} {date_obj.strftime('%d/%m')} {class_time}"
+            keyboard.append([InlineKeyboardButton(
+                button_text,
+                callback_data=f'cancel_{booking_id}'
+            )])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "🗑️ Quale prenotazione vuoi cancellare?\n\n"
+            "Seleziona dalla lista:",
+            reply_markup=reply_markup
+        )
+        
+    except Exception as e:
+        logger.error(f"Errore in cancella: {e}")
+        await update.message.reply_text("❌ Errore nel recuperare le prenotazioni.")
+
+
+async def cancel_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback per cancellare una prenotazione specifica"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Estrai booking_id dal callback_data
+    booking_id = int(query.data.split('_')[1])
+    user_id = str(query.from_user.id)
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Verifica che la prenotazione appartenga all'utente
+        cur.execute(
+            """
+            SELECT class_name, class_date, class_time
+            FROM bookings
+            WHERE id = %s AND user_id = %s AND status = 'pending'
+            """,
+            (booking_id, user_id)
+        )
+        
+        booking = cur.fetchone()
+        
+        if not booking:
+            await query.edit_message_text(
+                "❌ Prenotazione non trovata o già cancellata."
+            )
+            cur.close()
+            conn.close()
+            return
+        
+        class_name, class_date, class_time = booking
+        
+        # Cancella (imposta status = 'cancelled')
+        cur.execute(
+            """
+            UPDATE bookings
+            SET status = 'cancelled'
+            WHERE id = %s
+            """,
+            (booking_id,)
+        )
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        # Formatta messaggio di conferma
+        date_obj = datetime.strptime(str(class_date), '%Y-%m-%d')
+        day_name = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'][date_obj.weekday()]
+        
+        await query.edit_message_text(
+            f"✅ Prenotazione cancellata!\n\n"
+            f"📚 Lezione: {class_name}\n"
+            f"📅 Data: {day_name} {date_obj.strftime('%d/%m/%Y')}\n"
+            f"🕐 Orario: {class_time}\n\n"
+            f"ID: #{booking_id}\n\n"
+            f"💡 Usa /prenota per programmarne un'altra."
+        )
+        
+        logger.info(f"✅ Prenotazione #{booking_id} cancellata da utente {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Errore cancellazione prenotazione: {e}")
+        await query.edit_message_text(
+            "❌ Errore nella cancellazione. Riprova."
+        )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -500,11 +627,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   Il bot prenoterà automaticamente 72h prima.\n\n"
         "/lista - Vedi tutte le prenotazioni programmate\n"
         "   Mostra cosa hai in programma.\n\n"
-        "/cancella <ID> - Cancella una prenotazione\n"
-        "   Esempio: /cancella 5\n\n"
+        "/cancella - Cancella una prenotazione\n"
+        "   Ti mostrerò la lista e scegli quale cancellare.\n\n"
         "⏰ ORARI:\n"
         "Il bot è attivo dalle 8:00 alle 21:00 ogni giorno.\n"
-        "Controlla ogni ora se ci sono prenotazioni da fare.\n\n"
+        "Controlla ogni 2 minuti se ci sono prenotazioni da fare.\n\n"
         "📲 NOTIFICHE:\n"
         "Riceverai un messaggio quando il bot prenota per te!\n\n"
         "❓ Problemi? Il bot ora prenota REALMENTE su EasyFit! 🎉"
@@ -659,12 +786,14 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("prenota", prenota))
     application.add_handler(CommandHandler("lista", lista))
+    application.add_handler(CommandHandler("cancella", cancella))
     application.add_handler(CommandHandler("help", help_command))
     
     # Callback handlers
     application.add_handler(CallbackQueryHandler(class_selected, pattern="^class_"))
     application.add_handler(CallbackQueryHandler(date_selected, pattern="^date_"))
     application.add_handler(CallbackQueryHandler(time_selected, pattern="^time_"))
+    application.add_handler(CallbackQueryHandler(cancel_booking, pattern="^cancel_"))
     
     # Avvia scheduler (controlla ogni 2 minuti dalle 8 alle 21)
     scheduler = BackgroundScheduler()
