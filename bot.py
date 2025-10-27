@@ -63,10 +63,10 @@ def easyfit_login():
         return None, None
 
 
-def get_calendar_courses(start_date, end_date):
+def get_calendar_courses(start_date, end_date, session_id=None):
     """
-    Recupera i corsi disponibili dal calendario pubblico di EasyFit
-    NON RICHIEDE LOGIN - API pubblica!
+    Recupera i corsi disponibili dal calendario di EasyFit
+    Se viene passato session_id, usa quello, altrimenti fa login
     """
     try:
         logger.info(f"📅 Recupero calendario: {start_date} -> {end_date}")
@@ -79,14 +79,36 @@ def get_calendar_courses(start_date, end_date):
             "organizationUnitIds": ORGANIZATION_UNIT_ID
         }
         
-        response = requests.get(url, params=params, timeout=15)
+        # Headers necessari
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "it-IT,it;q=0.9",
+            "Origin": "https://app-easyfitpalestre.it",
+            "Referer": f"https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course"
+        }
+        
+        # Se abbiamo session_id, aggiungi cookie
+        if session_id:
+            headers["Cookie"] = f"sessionId={session_id}"
+        
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         
         if response.status_code == 200:
             courses = response.json()
             logger.info(f"✅ Calendario recuperato: {len(courses)} corsi trovati")
             return courses
+        elif response.status_code == 401:
+            # Se fallisce senza session, prova con login
+            logger.warning("⚠️ Errore 401, provo con login...")
+            session_id, _ = easyfit_login()
+            if session_id:
+                return get_calendar_courses(start_date, end_date, session_id)
+            else:
+                logger.error("❌ Login fallito, impossibile recuperare calendario")
+                return []
         else:
-            logger.error(f"❌ Errore recupero calendario: {response.status_code}")
+            logger.error(f"❌ Errore recupero calendario: {response.status_code} - {response.text}")
             return []
             
     except Exception as e:
