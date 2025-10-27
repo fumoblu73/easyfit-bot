@@ -35,9 +35,12 @@ def get_db_connection():
 # =============================================================================
 
 def easyfit_login():
-    """Effettua login su EasyFit e restituisce session e token"""
+    """Effettua login su EasyFit e restituisce session object"""
     try:
         logger.info("🔐 Tentativo login EasyFit...")
+        
+        # Crea una nuova sessione
+        session = requests.Session()
         
         url = f"{EASYFIT_BASE_URL}/login"
         
@@ -67,31 +70,38 @@ def easyfit_login():
             "password": EASYFIT_PASSWORD
         }
         
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response = session.post(url, json=payload, headers=headers, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
             session_id = data.get('sessionId')
-            access_token = data.get('access_token')
             
             logger.info(f"✅ Login effettuato! SessionID: {session_id[:20]}...")
-            return session_id, access_token
+            return session  # Restituisce la sessione con i cookie
         else:
             logger.error(f"❌ Login fallito: {response.status_code} - {response.text}")
-            return None, None
+            return None
             
     except Exception as e:
         logger.error(f"❌ Errore login: {e}")
-        return None, None
+        return None
 
 
-def get_calendar_courses(start_date, end_date, session_id=None):
+def get_calendar_courses(start_date, end_date, session=None):
     """
     Recupera i corsi disponibili dal calendario di EasyFit
-    Se viene passato session_id, usa quello, altrimenti fa login
+    Se viene passata session, usa quella, altrimenti fa login
     """
     try:
         logger.info(f"📅 Recupero calendario: {start_date} -> {end_date}")
+        
+        # Se non abbiamo sessione, fai login
+        if not session:
+            logger.info("🔐 Nessuna sessione, faccio login...")
+            session = easyfit_login()
+            if not session:
+                logger.error("❌ Login fallito, impossibile recuperare calendario")
+                return []
         
         url = f"{EASYFIT_BASE_URL}/nox/public/v2/bookableitems/courses/with-canceled"
         params = {
@@ -110,27 +120,14 @@ def get_calendar_courses(start_date, end_date, session_id=None):
             "Referer": f"https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course"
         }
         
-        # Se abbiamo session_id, aggiungi cookie
-        if session_id:
-            headers["Cookie"] = f"sessionId={session_id}"
-        
-        response = requests.get(url, params=params, headers=headers, timeout=15)
+        response = session.get(url, params=params, headers=headers, timeout=15)
         
         if response.status_code == 200:
             courses = response.json()
             logger.info(f"✅ Calendario recuperato: {len(courses)} corsi trovati")
             return courses
-        elif response.status_code == 401:
-            # Se fallisce senza session, prova con login
-            logger.warning("⚠️ Errore 401, provo con login...")
-            session_id, _ = easyfit_login()
-            if session_id:
-                return get_calendar_courses(start_date, end_date, session_id)
-            else:
-                logger.error("❌ Login fallito, impossibile recuperare calendario")
-                return []
         else:
-            logger.error(f"❌ Errore recupero calendario: {response.status_code} - {response.text}")
+            logger.error(f"❌ Errore recupero calendario: {response.status_code}")
             return []
             
     except Exception as e:
@@ -138,7 +135,7 @@ def get_calendar_courses(start_date, end_date, session_id=None):
         return []
 
 
-def book_course_easyfit(session_id, course_appointment_id):
+def book_course_easyfit(session, course_appointment_id):
     """Prenota un corso su EasyFit usando l'API reale"""
     try:
         logger.info(f"📝 Tentativo prenotazione corso ID: {course_appointment_id}")
@@ -146,8 +143,7 @@ def book_course_easyfit(session_id, course_appointment_id):
         url = f"{EASYFIT_BASE_URL}/nox/v1/calendar/bookcourse"
         
         headers = {
-            "Content-Type": "application/json",
-            "Cookie": f"sessionId={session_id}"
+            "Content-Type": "application/json"
         }
         
         payload = {
@@ -155,7 +151,7 @@ def book_course_easyfit(session_id, course_appointment_id):
             "expectedCustomerStatus": "BOOKED"
         }
         
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response = session.post(url, json=payload, headers=headers, timeout=10)
         
         if response.status_code == 200:
             logger.info(f"✅ Prenotazione effettuata con successo!")
@@ -169,17 +165,16 @@ def book_course_easyfit(session_id, course_appointment_id):
         return False, None
 
 
-def find_course_appointment_id(class_name, class_date, class_time):
+def find_course_appointment_id(session, class_name, class_date, class_time):
     """
     Trova il courseAppointmentId cercando nel calendario
-    NOTA: Il courseAppointmentId sembra essere l'ID del benefit/corso
     """
     try:
         date_obj = datetime.strptime(class_date, '%Y-%m-%d')
         start_date = date_obj.strftime('%Y-%m-%d')
         end_date = date_obj.strftime('%Y-%m-%d')
         
-        courses = get_calendar_courses(start_date, end_date)
+        courses = get_calendar_courses(start_date, end_date, session)
         
         for course in courses:
             if course['name'].lower() == class_name.lower():
@@ -189,7 +184,6 @@ def find_course_appointment_id(class_name, class_date, class_time):
                     slot_time = slot_datetime.split('T')[1][:5]
                     
                     if slot_time == class_time:
-                        # Usa l'ID del corso come courseAppointmentId
                         course_appointment_id = course['id']
                         
                         logger.info(f"✅ Corso trovato: {course['name']} - ID: {course_appointment_id}")
@@ -710,21 +704,24 @@ def check_and_book(application):
             
             logger.info(f"📝 Prenotazione #{booking_id}: {class_name} per {class_date} {class_time}")
             
-            session_id, access_token = easyfit_login()
+            # Login e ottieni session
+            session = easyfit_login()
             
-            if not session_id:
+            if not session:
                 logger.error(f"❌ Login fallito per prenotazione #{booking_id}")
                 send_telegram_notification(application, user_id, class_name, class_date, class_time, False)
                 continue
             
-            course_appointment_id, slot = find_course_appointment_id(class_name, class_date, class_time)
+            # Trova courseAppointmentId
+            course_appointment_id, slot = find_course_appointment_id(session, class_name, class_date, class_time)
             
             if not course_appointment_id:
                 logger.error(f"❌ Corso non trovato per prenotazione #{booking_id}")
                 send_telegram_notification(application, user_id, class_name, class_date, class_time, False)
                 continue
             
-            success, result = book_course_easyfit(session_id, course_appointment_id)
+            # Prenota
+            success, result = book_course_easyfit(session, course_appointment_id)
             
             if success:
                 cur.execute(
