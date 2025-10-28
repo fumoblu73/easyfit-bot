@@ -452,7 +452,7 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Salva la prenotazione nel database"""
+    """Salva la prenotazione nel database o prenota subito se < 72h"""
     query = update.callback_query
     await query.answer()
     
@@ -464,7 +464,89 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     class_datetime = datetime.strptime(f"{class_date} {time_str}", '%Y-%m-%d %H:%M')
     booking_datetime = class_datetime - timedelta(hours=72)
+    now = datetime.now()
     
+    # CALCOLA ORE MANCANTI
+    hours_until_class = (class_datetime - now).total_seconds() / 3600
+    
+    # SE MANCANO MENO DI 72 ORE → PRENOTA SUBITO
+    if hours_until_class < 72:
+        logger.info(f"⚡ Prenotazione immediata! Mancano {hours_until_class:.1f} ore")
+        
+        await query.edit_message_text(
+            f"⚡ Mancano meno di 72 ore!\n\n"
+            f"Sto prenotando SUBITO...\n"
+            f"⏳ Attendi qualche secondo..."
+        )
+        
+        # RECUPERA SESSIONE
+        session = context.user_data.get('easyfit_session')
+        
+        if not session:
+            # Fai nuovo login se sessione scaduta
+            session = easyfit_login()
+        
+        if not session:
+            await query.edit_message_text(
+                "❌ Impossibile connettersi a EasyFit.\n"
+                "Riprova con /prenota"
+            )
+            return
+        
+        # TROVA COURSE ID
+        course_appointment_id, slot = find_course_appointment_id(
+            session, class_name, class_date, time_str
+        )
+        
+        if not course_appointment_id:
+            await query.edit_message_text(
+                f"❌ Lezione non trovata su EasyFit.\n\n"
+                f"📚 {class_name}\n"
+                f"📅 {class_date} {time_str}\n\n"
+                f"Verifica che sia ancora disponibile sull'app."
+            )
+            return
+        
+        # PRENOTA SUBITO
+        success, final_status, result = book_course_easyfit(session, course_appointment_id)
+        
+        date_obj = datetime.strptime(class_date, '%Y-%m-%d')
+        day_name = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'][date_obj.weekday()]
+        
+        if success:
+            if final_status == "completed":
+                await query.edit_message_text(
+                    f"✅ PRENOTATO SUBITO!\n\n"
+                    f"📚 {class_name}\n"
+                    f"📅 {day_name} {date_obj.strftime('%d/%m/%Y')}\n"
+                    f"🕐 {time_str}\n\n"
+                    f"⚡ Prenotazione immediata completata!\n"
+                    f"(Mancavano meno di 72 ore)\n\n"
+                    f"Ci vediamo in palestra! 💪"
+                )
+            elif final_status == "waitlisted":
+                await query.edit_message_text(
+                    f"📋 IN LISTA D'ATTESA!\n\n"
+                    f"📚 {class_name}\n"
+                    f"📅 {day_name} {date_obj.strftime('%d/%m/%Y')}\n"
+                    f"🕐 {time_str}\n\n"
+                    f"⚠️ La lezione era piena!\n"
+                    f"Sei stato inserito in lista d'attesa.\n\n"
+                    f"🔔 Controlla l'app EasyFit per aggiornamenti."
+                )
+        else:
+            await query.edit_message_text(
+                f"❌ PRENOTAZIONE FALLITA\n\n"
+                f"📚 {class_name}\n"
+                f"📅 {day_name} {date_obj.strftime('%d/%m/%Y')}\n"
+                f"🕐 {time_str}\n\n"
+                f"Prova manualmente su app EasyFit."
+            )
+        
+        logger.info(f"⚡ Prenotazione immediata: {class_name} - {final_status}")
+        return
+    
+    # ALTRIMENTI → PROGRAMMA PER 72H PRIMA (COMPORTAMENTO NORMALE)
     try:
         conn = get_db_connection()
         cur = conn.cursor()
