@@ -165,12 +165,13 @@ def find_course_appointment_id(session, class_name, class_date, class_time):
 
 
 def book_course_easyfit(session, course_appointment_id):
-    """Prenota corso su EasyFit"""
+    """Prenota corso su EasyFit con fallback automatico su lista d'attesa"""
     try:
         logger.info(f"📝 Prenotazione ID: {course_appointment_id}")
         
         url = f"{EASYFIT_BASE_URL}/nox/v1/calendar/bookcourse"
         
+        # Tentativo 1: Prenotazione normale
         payload = {
             "courseAppointmentId": course_appointment_id,
             "expectedCustomerStatus": "BOOKED"
@@ -184,17 +185,40 @@ def book_course_easyfit(session, course_appointment_id):
             
             if status == "BOOKED":
                 logger.info(f"✅ PRENOTATO!")
-                return True, data
+                return True, "booked", data
             else:
-                logger.warning(f"⚠️  Status: {status}")
-                return False, data
+                logger.warning(f"⚠️  Prenotazione normale fallita. Status: {status}")
+                # Lezione potrebbe essere piena, proviamo lista d'attesa
         else:
-            logger.error(f"❌ Prenotazione fallita: {response.status_code}")
-            return False, None
+            logger.warning(f"⚠️  Prenotazione normale fallita: {response.status_code}")
+        
+        # Tentativo 2: Lista d'attesa
+        logger.info(f"🔄 Tentativo lista d'attesa...")
+        
+        payload_waitlist = {
+            "courseAppointmentId": course_appointment_id,
+            "expectedCustomerStatus": "WAITLISTED"
+        }
+        
+        response_waitlist = session.post(url, json=payload_waitlist, timeout=10)
+        
+        if response_waitlist.status_code == 200:
+            data_waitlist = response_waitlist.json()
+            status_waitlist = data_waitlist.get('participantStatus')
+            
+            if status_waitlist == "WAITLISTED":
+                logger.info(f"⏳ LISTA D'ATTESA!")
+                return True, "waitlisted", data_waitlist
+            else:
+                logger.error(f"❌ Anche lista d'attesa fallita. Status: {status_waitlist}")
+                return False, "failed", data_waitlist
+        else:
+            logger.error(f"❌ Lista d'attesa fallita: {response_waitlist.status_code}")
+            return False, "failed", None
             
     except Exception as e:
         logger.error(f"❌ Errore prenotazione: {e}")
-        return False, None
+        return False, "error", None
 
 
 # ============================================================================
@@ -288,18 +312,23 @@ def check_and_book(application):
                 continue
             
             # Prenota
-            success, result = book_course_easyfit(session, course_id)
+            success, booking_type, result = book_course_easyfit(session, course_id)
             
             if success:
-                logger.info(f"✅ Prenotazione #{booking_id} RIUSCITA!")
+                if booking_type == "booked":
+                    logger.info(f"✅ Prenotazione #{booking_id} CONFERMATA!")
+                    final_status = "completed"
+                elif booking_type == "waitlisted":
+                    logger.info(f"⏳ Prenotazione #{booking_id} - LISTA D'ATTESA!")
+                    final_status = "waitlisted"
                 
                 cur.execute(
                     """
                     UPDATE bookings
-                    SET status = 'completed'
+                    SET status = %s
                     WHERE id = %s
                     """,
-                    (booking_id,)
+                    (final_status, booking_id)
                 )
                 
                 conn.commit()
@@ -307,15 +336,15 @@ def check_and_book(application):
                 
                 send_telegram_notification(
                     application, user_id, class_name,
-                    class_date, class_time, True
+                    class_date, class_time, True, booking_type
                 )
                 
                 logger.info(f"🎉 Completata!")
             else:
-                logger.error(f"❌ Prenotazione fallita #{booking_id}")
+                logger.error(f"❌ Prenotazione #{booking_id} FALLITA!")
                 send_telegram_notification(
                     application, user_id, class_name,
-                    class_date, class_time, False
+                    class_date, class_time, False, "failed"
                 )
             
             logger.info(f"{'─'*60}")
@@ -336,24 +365,37 @@ def check_and_book(application):
     logger.info("="*60)
 
 
-def send_telegram_notification(application, user_id, class_name, class_date, class_time, success):
-    """Invia notifica Telegram"""
+def send_telegram_notification(application, user_id, class_name, class_date, class_time, success, booking_type="failed"):
+    """Invia notifica Telegram con gestione lista d'attesa"""
     try:
         if success:
-            message = (
-                f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
-                f"📚 {class_name}\n"
-                f"📅 {class_date}\n"
-                f"🕐 {class_time}\n\n"
-                f"Ci vediamo in palestra! 💪"
-            )
+            if booking_type == "booked":
+                message = (
+                    f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
+                    f"📚 {class_name}\n"
+                    f"📅 {class_date}\n"
+                    f"🕐 {class_time}\n\n"
+                    f"Ci vediamo in palestra! 💪"
+                )
+            elif booking_type == "waitlisted":
+                message = (
+                    f"⏳ IN LISTA D'ATTESA\n\n"
+                    f"📚 {class_name}\n"
+                    f"📅 {class_date}\n"
+                    f"🕐 {class_time}\n\n"
+                    f"⚠️  La lezione era piena!\n"
+                    f"Sei stato inserito in lista d'attesa.\n\n"
+                    f"🔔 Ti avviseremo se si libera un posto!\n"
+                    f"Controlla l'app EasyFit per aggiornamenti."
+                )
         else:
             message = (
-                f"❌ Prenotazione fallita\n\n"
+                f"❌ PRENOTAZIONE NON POSSIBILE\n\n"
                 f"📚 {class_name}\n"
                 f"📅 {class_date}\n"
                 f"🕐 {class_time}\n\n"
-                f"Prova manualmente su app EasyFit"
+                f"La lezione è piena e anche la lista d'attesa.\n"
+                f"Prova manualmente su app EasyFit o scegli altra lezione."
             )
         
         import asyncio
@@ -646,9 +688,15 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif status == 'completed':
                 emoji = "✅"
                 status_text = "Prenotata"
+            elif status == 'waitlisted':
+                emoji = "📋"
+                status_text = "Lista d'attesa"
+            elif status == 'cancelled':
+                emoji = "🚫"
+                status_text = "Annullata"
             else:
                 emoji = "❌"
-                status_text = "Annullata"
+                status_text = "Fallita"
             
             message += f"{emoji} #{booking_id} - {class_name}\n"
             message += f"   📅 {day_name} {date_obj.strftime('%d/%m')} ore {class_time}\n"
