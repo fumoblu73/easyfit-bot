@@ -51,18 +51,27 @@ def get_calendar_courses(start_date, end_date):
     try:
         url = f"{EASYFIT_BASE_URL}/nox/v2/bookableitems/courses/with-canceled"
         
+        # Aggiungi ora ai parametri di data (formato ISO completo)
         params = {
             "facilityId": FACILITY_ID,
-            "startDate": start_date,
-            "endDate": end_date
+            "startDate": f"{start_date}T00:00:00.000Z",
+            "endDate": f"{end_date}T23:59:59.999Z"
         }
         
         headers = {
             "Accept": "application/json",
+            "Accept-Language": "it-IT,it;q=0.9",
             "Origin": EASYFIT_BASE_URL,
-            "Referer": f"{EASYFIT_BASE_URL}/studio/{STUDIO_ID}/course"
+            "Referer": f"{EASYFIT_BASE_URL}/studio/{STUDIO_ID}/course",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "x-tenant": "easyfit",
+            "x-ms-web-context": f"/studio/{STUDIO_ID}",
+            "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
+            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
         }
         
+        logger.info(f"🔍 Richiesta calendario: {start_date} → {end_date}")
         response = requests.get(url, params=params, headers=headers, timeout=15)
         
         if response.status_code == 200:
@@ -71,10 +80,13 @@ def get_calendar_courses(start_date, end_date):
             return courses
         else:
             logger.error(f"❌ Errore calendario: {response.status_code}")
+            logger.error(f"   Response: {response.text[:200]}")
             return []
             
     except Exception as e:
         logger.error(f"❌ Errore get_calendar: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return []
 
 
@@ -442,25 +454,32 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
         start_date = today.strftime('%Y-%m-%d')
         end_date = (today + timedelta(days=7)).strftime('%Y-%m-%d')
         
+        logger.info(f"📅 Range: {start_date} → {end_date}")
         courses = get_calendar_courses(start_date, end_date)
         
         if not courses:
             await update.message.reply_text(
-                "❌ Impossibile recuperare il calendario.\n"
-                "Riprova tra qualche minuto."
+                "❌ Impossibile recuperare il calendario.\n\n"
+                "Possibili cause:\n"
+                "• Problema temporaneo con EasyFit\n"
+                "• Nessuna lezione nei prossimi 7 giorni\n\n"
+                "Riprova tra qualche minuto o controlla l'app EasyFit."
             )
             return
         
         # Estrai nomi lezioni univoci
         class_names = set()
         for course in courses:
-            class_names.add(course['name'])
+            if 'name' in course and course['name']:
+                class_names.add(course['name'])
         
         if not class_names:
             await update.message.reply_text(
                 "ℹ️  Nessuna lezione disponibile nei prossimi 7 giorni."
             )
             return
+        
+        logger.info(f"📚 Lezioni trovate: {', '.join(sorted(class_names))}")
         
         # Salva calendario in context
         context.user_data['calendar'] = courses
@@ -481,9 +500,12 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     except Exception as e:
-        logger.error(f"Errore /prenota: {e}")
+        logger.error(f"❌ Errore /prenota: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         await update.message.reply_text(
-            "❌ Errore. Riprova."
+            "❌ Si è verificato un errore.\n"
+            "Riprova tra qualche minuto."
         )
 
 
