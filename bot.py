@@ -214,12 +214,12 @@ def find_course_appointment_id(session, class_name, class_date, class_time):
                     slot_time = slot_datetime.split('T')[1][:5]
                     
                     if slot_time == class_time:
-                        # L'ID è 'courseAppointmentId' nello slot
-                        course_appointment_id = slot.get('courseAppointmentId')
+                        # L'ID è a livello di CORSO, non di slot
+                        course_appointment_id = course.get('id')
                         
                         if not course_appointment_id:
-                            logger.warning(f"⚠️ Slot trovato ma senza courseAppointmentId")
-                            logger.warning(f"   Slot keys: {list(slot.keys())}")
+                            logger.error(f"❌ Corso trovato ma senza ID")
+                            logger.error(f"   Course keys: {list(course.keys())}")
                             continue
                         
                         logger.info(f"✅ Trovato ID: {course_appointment_id}")
