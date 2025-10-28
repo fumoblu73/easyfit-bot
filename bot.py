@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-EasyFit Bot - Versione con Debug Dettagliato
-Aggiunge logging per capire perché lo scheduler non funziona
+EasyFit Bot - Versione con Debug Database
+Logging dettagliato per capire perché l'update non funziona
 """
 
 import os
@@ -16,7 +16,7 @@ import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-# Configurazione logging PIÙ DETTAGLIATO
+# Configurazione logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
@@ -37,142 +37,178 @@ def get_db_connection():
 
 
 # ============================================================================
-# FUNZIONE CHECK_AND_BOOK CON LOGGING DETTAGLIATO
+# FUNZIONE CHECK_AND_BOOK CON DEBUG DATABASE
 # ============================================================================
 
 def check_and_book(application):
-    """Controlla e prenota - VERSIONE DEBUG"""
+    """Controlla e prenota - CON DEBUG DATABASE"""
     
     logger.info("="*60)
-    logger.info("🔍 INIZIO CONTROLLO PRENOTAZIONI")
-    logger.info(f"⏰ Ora attuale: {datetime.now()}")
+    logger.info("🔍 CONTROLLO PRENOTAZIONI")
+    logger.info(f"⏰ Ora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # 1. Controllo orario
+    # Controllo orario
     current_hour = datetime.now().hour
-    logger.info(f"📍 Orario corrente: {current_hour}:xx")
     
     if not (8 <= current_hour < 21):
-        logger.info(f"⏰ Fuori orario attivo (8-21). Orario attuale: {current_hour}h")
+        logger.info(f"⏰ Fuori orario attivo (8-21). Ora: {current_hour}h")
         logger.info("="*60)
         return
     
     logger.info("✅ Dentro orario attivo (8-21)")
     
-    # 2. Connessione database
+    # Connessione database
+    conn = None
+    cur = None
+    
     try:
         logger.info("🔌 Connessione al database...")
         conn = get_db_connection()
+        conn.autocommit = False  # Assicurati che autocommit sia disabilitato
         cur = conn.cursor()
-        logger.info("✅ Connesso al database")
+        logger.info("✅ Database connesso (autocommit=False)")
     except Exception as e:
-        logger.error(f"❌ Errore connessione database: {e}")
-        logger.info("="*60)
+        logger.error(f"❌ Errore connessione DB: {e}")
         return
     
-    # 3. Query prenotazioni
     try:
         now = datetime.now()
-        two_hours_ago = now - timedelta(hours=2)
         
-        logger.info(f"🔎 Cerco prenotazioni tra {two_hours_ago} e {now}")
+        # Cerca TUTTE le prenotazioni pending il cui booking_date è passato
+        logger.info(f"🔎 Cerco prenotazioni pending con booking_date <= {now}")
         
         cur.execute(
             """
             SELECT id, user_id, class_name, class_date, class_time, booking_date, status
             FROM bookings
             WHERE status = 'pending'
+            AND booking_date <= %s
             ORDER BY booking_date
-            """
-        )
-        
-        all_pending = cur.fetchall()
-        logger.info(f"📊 Totale prenotazioni 'pending': {len(all_pending)}")
-        
-        if all_pending:
-            logger.info("📋 Lista prenotazioni pending:")
-            for b in all_pending:
-                logger.info(f"   #{b[0]} - {b[2]} - {b[3]} {b[4]} - booking_date: {b[5]}")
-        
-        # Query con filtro temporale
-        cur.execute(
-            """
-            SELECT id, user_id, class_name, class_date, class_time
-            FROM bookings
-            WHERE status = 'pending'
-            AND booking_date BETWEEN %s AND %s
             """,
-            (two_hours_ago, now)
+            (now,)
         )
         
         bookings_to_make = cur.fetchall()
         
-        logger.info(f"🎯 Prenotazioni DA FARE ORA: {len(bookings_to_make)}")
+        logger.info(f"📊 Prenotazioni trovate: {len(bookings_to_make)}")
         
         if not bookings_to_make:
-            logger.info("ℹ️  Nessuna prenotazione da effettuare in questo momento")
+            logger.info("ℹ️  Nessuna prenotazione da effettuare")
             cur.close()
             conn.close()
             logger.info("="*60)
             return
         
-        # 4. Processa prenotazioni
+        # Processa ogni prenotazione
         for booking in bookings_to_make:
-            booking_id, user_id, class_name, class_date, class_time = booking
+            booking_id, user_id, class_name, class_date, class_time, booking_date, current_status = booking
             
             logger.info("")
             logger.info(f"{'─'*60}")
-            logger.info(f"📝 PROCESSO PRENOTAZIONE #{booking_id}")
-            logger.info(f"   Lezione: {class_name}")
-            logger.info(f"   Data: {class_date}")
-            logger.info(f"   Ora: {class_time}")
-            logger.info(f"   User ID: {user_id}")
+            logger.info(f"📝 PRENOTAZIONE #{booking_id}")
+            logger.info(f"   📚 {class_name}")
+            logger.info(f"   📅 {class_date} ore {class_time}")
+            logger.info(f"   🔔 Booking date: {booking_date}")
+            logger.info(f"   📍 Status corrente: {current_status}")
             
-            # Simula prenotazione per debug
-            logger.info(f"🔄 [DEBUG MODE] Simulazione prenotazione...")
-            success = True  # Simulato
+            # SIMULAZIONE
+            logger.info(f"🔄 [SIMULAZIONE] Prenotazione in corso...")
+            success = True
             
             if success:
-                logger.info(f"✅ Prenotazione simulata con successo")
+                logger.info(f"✅ Prenotazione simulata OK")
                 
-                # Aggiorna database
-                cur.execute(
-                    """
-                    UPDATE bookings
-                    SET status = 'completed'
-                    WHERE id = %s
-                    """,
-                    (booking_id,)
-                )
-                conn.commit()
-                logger.info(f"💾 Database aggiornato: status → 'completed'")
+                # === DEBUG DATABASE UPDATE ===
+                logger.info(f"💾 Inizio UPDATE database...")
+                logger.info(f"   UPDATE bookings SET status = 'completed' WHERE id = {booking_id}")
                 
-                # Invia notifica Telegram
                 try:
-                    send_telegram_notification(
-                        application,
-                        user_id,
-                        class_name,
-                        class_date,
-                        class_time,
-                        True
+                    # Esegui UPDATE
+                    cur.execute(
+                        """
+                        UPDATE bookings
+                        SET status = 'completed'
+                        WHERE id = %s
+                        """,
+                        (booking_id,)
                     )
-                    logger.info(f"📱 Notifica Telegram inviata")
-                except Exception as e:
-                    logger.error(f"❌ Errore invio notifica: {e}")
+                    
+                    rows_affected = cur.rowcount
+                    logger.info(f"   ✅ Query eseguita. Righe modificate: {rows_affected}")
+                    
+                    if rows_affected == 0:
+                        logger.warning(f"   ⚠️  ATTENZIONE: Nessuna riga modificata!")
+                    
+                    # COMMIT ESPLICITO
+                    logger.info(f"   💾 Eseguo COMMIT...")
+                    conn.commit()
+                    logger.info(f"   ✅ COMMIT completato!")
+                    
+                    # VERIFICA IMMEDIATA
+                    logger.info(f"   🔍 Verifico aggiornamento...")
+                    cur.execute(
+                        """
+                        SELECT status FROM bookings WHERE id = %s
+                        """,
+                        (booking_id,)
+                    )
+                    
+                    new_status = cur.fetchone()[0]
+                    logger.info(f"   📊 Status dopo update: {new_status}")
+                    
+                    if new_status == 'completed':
+                        logger.info(f"   🎉 Verifica OK: status = 'completed'")
+                    else:
+                        logger.error(f"   ❌ ERRORE: Status ancora '{new_status}'!")
+                    
+                except psycopg2.Error as db_error:
+                    logger.error(f"   ❌ ERRORE DATABASE: {db_error}")
+                    logger.error(f"   Tipo errore: {type(db_error)}")
+                    conn.rollback()
+                    logger.error(f"   ROLLBACK eseguito")
+                    continue
+                except Exception as update_error:
+                    logger.error(f"   ❌ ERRORE GENERICO: {update_error}")
+                    logger.exception("   Stack trace:")
+                    conn.rollback()
+                    continue
                 
-                logger.info(f"🎉 Prenotazione #{booking_id} COMPLETATA!")
+                # Notifica Telegram
+                try:
+                    logger.info(f"📱 Invio notifica Telegram...")
+                    send_telegram_notification(
+                        application, user_id, class_name,
+                        class_date, class_time, True
+                    )
+                    logger.info(f"   ✅ Notifica inviata")
+                except Exception as e:
+                    logger.error(f"   ❌ Errore notifica: {e}")
+                
+                logger.info(f"🎉 Prenotazione #{booking_id} COMPLETATA")
             else:
-                logger.error(f"❌ Prenotazione #{booking_id} FALLITA!")
+                logger.error(f"❌ Prenotazione #{booking_id} FALLITA")
             
             logger.info(f"{'─'*60}")
         
+        # Chiusura connessione
+        logger.info("🔒 Chiusura connessione database...")
         cur.close()
         conn.close()
-        logger.info("✅ Controllo completato, database chiuso")
+        logger.info("✅ Connessione chiusa")
         
     except Exception as e:
-        logger.error(f"❌ ERRORE durante controllo: {e}")
-        logger.exception("Stack trace:")
+        logger.error(f"❌ ERRORE GENERALE: {e}")
+        logger.exception("Stack trace completo:")
+        if conn:
+            try:
+                conn.rollback()
+                logger.error("ROLLBACK eseguito")
+            except:
+                pass
+            try:
+                conn.close()
+            except:
+                pass
     
     logger.info("="*60)
 
@@ -197,7 +233,6 @@ def send_telegram_notification(application, user_id, class_name, class_date, cla
                 f"Riprova manualmente su app EasyFit"
             )
         
-        # Usa il chat_id specifico
         import asyncio
         asyncio.run(application.bot.send_message(chat_id=user_id, text=message))
         
@@ -206,32 +241,36 @@ def send_telegram_notification(application, user_id, class_name, class_date, cla
 
 
 # ============================================================================
-# HANDLER TELEGRAM (versione semplificata per debug)
+# HANDLER TELEGRAM
 # ============================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Bot EasyFit - Versione DEBUG\n\n"
+        "🤖 Bot EasyFit - Debug Database\n\n"
         "Comandi:\n"
-        "/test - Forza controllo prenotazioni ORA\n"
-        "/status - Vedi prenotazioni pending\n"
-        "/logs - Info scheduler"
+        "/test - Forza controllo prenotazioni\n"
+        "/status - Stato prenotazioni\n"
+        "/reset4 - Reset record #4 a pending"
     )
 
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Forza controllo prenotazioni manualmente"""
-    await update.message.reply_text("🔍 Forzando controllo prenotazioni...")
+    """Forza controllo manuale"""
+    await update.message.reply_text("🔍 Controllo prenotazioni in corso...")
     
     try:
         check_and_book(context.application)
-        await update.message.reply_text("✅ Controllo completato! Guarda i logs su Render.")
+        await update.message.reply_text(
+            "✅ Fatto!\n\n"
+            "Controlla i logs su Render per dettagli.\n"
+            "Poi ricontrolla su Supabase (ricarica pagina)"
+        )
     except Exception as e:
         await update.message.reply_text(f"❌ Errore: {e}")
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mostra stato prenotazioni"""
+    """Mostra prenotazioni"""
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -239,22 +278,21 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("""
             SELECT id, class_name, class_date, class_time, booking_date, status
             FROM bookings
-            ORDER BY booking_date DESC
+            ORDER BY id DESC
             LIMIT 10
         """)
         
         bookings = cur.fetchall()
         
         if not bookings:
-            await update.message.reply_text("📋 Nessuna prenotazione nel database")
+            await update.message.reply_text("📋 Nessuna prenotazione")
             return
         
-        message = "📊 STATO PRENOTAZIONI:\n\n"
+        message = "📊 PRENOTAZIONI:\n\n"
         for b in bookings:
-            status_emoji = "✅" if b[5] == "completed" else "⏳" if b[5] == "pending" else "❌"
-            message += f"{status_emoji} #{b[0]} - {b[1]}\n"
+            emoji = "✅" if b[5] == "completed" else "⏳" if b[5] == "pending" else "❌"
+            message += f"{emoji} #{b[0]} - {b[1]}\n"
             message += f"   📅 {b[2]} ore {b[3]}\n"
-            message += f"   🔔 Prenota: {b[4]}\n"
             message += f"   Status: {b[5]}\n\n"
         
         await update.message.reply_text(message)
@@ -266,8 +304,31 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Errore: {e}")
 
 
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reset record #4 a pending per test"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            UPDATE bookings
+            SET status = 'pending'
+            WHERE id = 4
+        """)
+        
+        conn.commit()
+        
+        await update.message.reply_text("✅ Record #4 resettato a 'pending'")
+        
+        cur.close()
+        conn.close()
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Errore: {e}")
+
+
 # ============================================================================
-# HEALTH CHECK SERVER
+# HEALTH CHECK
 # ============================================================================
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -275,7 +336,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b'Bot EasyFit DEBUG is running')
+        self.wfile.write(b'OK')
     
     def log_message(self, format, *args):
         pass
@@ -287,9 +348,9 @@ def start_health_server():
         server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        logger.info(f"🌐 Health check server su porta {port}")
+        logger.info(f"🌐 Health server: porta {port}")
     except Exception as e:
-        logger.error(f"❌ Errore health server: {e}")
+        logger.error(f"❌ Health server: {e}")
 
 
 # ============================================================================
@@ -299,59 +360,43 @@ def start_health_server():
 def main():
     logger.info("")
     logger.info("="*70)
-    logger.info("🚀 AVVIO BOT EASYFIT - VERSIONE DEBUG")
+    logger.info("🚀 EASYFIT BOT - DEBUG DATABASE")
     logger.info("="*70)
-    
-    # Verifica variabili ambiente
-    logger.info("🔍 Verifica configurazione:")
-    logger.info(f"   TELEGRAM_TOKEN: {'✅ OK' if TELEGRAM_TOKEN else '❌ MANCANTE'}")
-    logger.info(f"   DATABASE_URL: {'✅ OK' if DATABASE_URL else '❌ MANCANTE'}")
-    logger.info(f"   EASYFIT_EMAIL: {EASYFIT_EMAIL if EASYFIT_EMAIL else '❌ MANCANTE'}")
+    logger.info(f"📊 DATABASE_URL presente: {'✅' if DATABASE_URL else '❌'}")
     
     # Crea applicazione
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Aggiungi handlers
+    # Handler
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("test", test_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("reset4", reset_command))
     
-    # Configura scheduler
-    logger.info("")
-    logger.info("⏰ Configurazione scheduler:")
-    logger.info("   Intervallo: ogni 2 minuti")
-    logger.info("   Orario attivo: 8:00 - 21:00")
+    # Scheduler
+    logger.info("⏰ Scheduler: ogni 2 minuti (8-21)")
     
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         lambda: check_and_book(application),
         'cron',
         hour='8-21',
-        minute='*/2',
-        id='check_bookings',
-        name='Controllo Prenotazioni'
+        minute='*/2'
     )
     scheduler.start()
     
     logger.info("✅ Scheduler avviato")
     
-    # Avvia health server
+    # Health server
     start_health_server()
     
-    # Info finale
     logger.info("")
     logger.info("="*70)
-    logger.info("✅ BOT PRONTO!")
+    logger.info("✅ BOT PRONTO - DEBUG MODE")
     logger.info("="*70)
-    logger.info("")
-    logger.info("📝 Comandi disponibili su Telegram:")
-    logger.info("   /test   - Forza controllo prenotazioni ORA")
-    logger.info("   /status - Vedi stato prenotazioni")
-    logger.info("")
-    logger.info("🔍 Il prossimo controllo automatico sarà tra max 2 minuti...")
     logger.info("")
     
-    # Avvia bot
+    # Avvia
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
