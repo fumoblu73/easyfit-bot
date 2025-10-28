@@ -155,11 +155,14 @@ def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "it-IT,it;q=0.9",
             "Origin": "https://app-easyfitpalestre.it",
             "Referer": "https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
             "x-tenant": "easyfit",
             "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
-            "x-nox-client-type": "WEB"
+            "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
+            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
         }
         
         # Tentativo 1: Prenotazione normale
@@ -487,12 +490,10 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏳ Attendi qualche secondo..."
         )
         
-        # RECUPERA SESSIONE
-        session = context.user_data.get('easyfit_session')
-        
-        if not session:
-            # Fai nuovo login se sessione scaduta
-            session = easyfit_login()
+        # IMPORTANTE: Fai NUOVO LOGIN per avere sessione fresca
+        # (la sessione precedente potrebbe essere scaduta)
+        logger.info("🔐 Nuovo login per prenotazione immediata...")
+        session = easyfit_login()
         
         if not session:
             await query.edit_message_text(
