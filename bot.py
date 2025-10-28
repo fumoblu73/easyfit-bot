@@ -1,12 +1,4 @@
-#!/usr/bin/env python3
-"""
-EasyFit Bot - VERSIONE DEFINITIVA COMPLETA
-Con tutti i comandi: prenota, lista, cancella, help
-Integrazione API EasyFit reale per calendario e prenotazioni
-"""
-
 import os
-import sys
 import logging
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,16 +6,14 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 import psycopg2
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-import base64
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import json
 
 # Configurazione logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    stream=sys.stdout,
-    force=True
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -33,83 +23,48 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 EASYFIT_EMAIL = os.getenv('EASYFIT_EMAIL')
 EASYFIT_PASSWORD = os.getenv('EASYFIT_PASSWORD')
 
-# Costanti EasyFit
+# Configurazione EasyFit API
 EASYFIT_BASE_URL = "https://app-easyfitpalestre.it"
-STUDIO_ID = "ZWFzeWZpdDoxMjE2OTE1Mzgw"
-FACILITY_ID = "easyfit:1216915380"
+ORGANIZATION_UNIT_ID = "1216915380"
 
+# Cache globale per sessione (per lo scheduler)
+_global_session = None
+
+# Connessione database
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 
-# ============================================================================
-# FUNZIONI API EASYFIT
-# ============================================================================
-
-def get_calendar_courses(start_date, end_date):
-    """Recupera calendario corsi PUBBLICO (no login richiesto)"""
-    try:
-        url = f"{EASYFIT_BASE_URL}/nox/v2/bookableitems/courses/with-canceled"
-        
-        # Aggiungi ora ai parametri di data (formato ISO completo)
-        params = {
-            "facilityId": FACILITY_ID,
-            "startDate": f"{start_date}T00:00:00.000Z",
-            "endDate": f"{end_date}T23:59:59.999Z"
-        }
-        
-        headers = {
-            "Accept": "application/json",
-            "Accept-Language": "it-IT,it;q=0.9",
-            "Origin": EASYFIT_BASE_URL,
-            "Referer": f"{EASYFIT_BASE_URL}/studio/{STUDIO_ID}/course",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "x-tenant": "easyfit",
-            "x-ms-web-context": f"/studio/{STUDIO_ID}",
-            "x-nox-client-type": "WEB",
-            "x-nox-web-context": "v=1",
-            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
-        }
-        
-        logger.info(f"🔍 Richiesta calendario: {start_date} → {end_date}")
-        response = requests.get(url, params=params, headers=headers, timeout=15)
-        
-        if response.status_code == 200:
-            courses = response.json()
-            logger.info(f"✅ Calendario: {len(courses)} corsi trovati")
-            return courses
-        else:
-            logger.error(f"❌ Errore calendario: {response.status_code}")
-            logger.error(f"   Response: {response.text[:200]}")
-            return []
-            
-    except Exception as e:
-        logger.error(f"❌ Errore get_calendar: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return []
-
+# =============================================================================
+# EASYFIT API FUNCTIONS
+# =============================================================================
 
 def easyfit_login():
-    """Effettua login su EasyFit"""
+    """Effettua login su EasyFit e restituisce session object"""
     try:
         logger.info("🔐 Login EasyFit...")
         
         session = requests.Session()
+        
         url = f"{EASYFIT_BASE_URL}/login"
         
+        # Basic Auth
+        import base64
         credentials = f"{EASYFIT_EMAIL}:{EASYFIT_PASSWORD}"
         basic_auth = base64.b64encode(credentials.encode()).decode()
         
         headers = {
             "Content-Type": "application/json",
             "Accept": "*/*",
+            "Accept-Language": "it-IT,it;q=0.9",
             "Authorization": f"Basic {basic_auth}",
-            "Origin": EASYFIT_BASE_URL,
-            "Referer": f"{EASYFIT_BASE_URL}/studio/{STUDIO_ID}/course",
+            "Origin": "https://app-easyfitpalestre.it",
+            "Referer": "https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "x-tenant": "easyfit",
-            "x-ms-web-context": f"/studio/{STUDIO_ID}",
+            "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
             "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
             "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
         }
         
@@ -121,10 +76,18 @@ def easyfit_login():
         response = session.post(url, json=payload, headers=headers, timeout=10)
         
         if response.status_code == 200:
-            logger.info(f"✅ Login OK")
+            data = response.json()
+            session_id = data.get('sessionId')
+            
+            logger.info(f"✅ Login OK! SessionID: {session_id[:20] if session_id else 'N/A'}...")
+            
+            # Salva sessionId come attributo della sessione
+            session.session_id = session_id
+            
             return session
         else:
             logger.error(f"❌ Login fallito: {response.status_code}")
+            logger.error(f"   Response: {response.text[:200]}")
             return None
             
     except Exception as e:
@@ -132,56 +95,72 @@ def easyfit_login():
         return None
 
 
-def find_course_appointment_id(session, class_name, class_date, class_time):
-    """Trova courseAppointmentId per prenotazione"""
+def get_calendar_courses(session, start_date, end_date):
+    """
+    Recupera i corsi disponibili dal calendario
+    USA LA SESSIONE PASSATA, non fa nuovo login
+    """
     try:
-        logger.info(f"🔎 Cerco: {class_name} {class_date} {class_time}")
+        logger.info(f"📅 Range: {start_date} → {end_date}")
         
-        date_obj = datetime.strptime(class_date, '%Y-%m-%d')
-        start_date = (date_obj - timedelta(hours=72)).strftime('%Y-%m-%d')
-        end_date = (date_obj + timedelta(days=7)).strftime('%Y-%m-%d')
-        
-        url = f"{EASYFIT_BASE_URL}/nox/v2/bookableitems/courses/with-canceled"
+        url = f"{EASYFIT_BASE_URL}/nox/public/v2/bookableitems/courses/with-canceled"
         
         params = {
-            "facilityId": FACILITY_ID,
             "startDate": start_date,
-            "endDate": end_date
+            "endDate": end_date,
+            "employeeIds": "",
+            "organizationUnitIds": ORGANIZATION_UNIT_ID
         }
         
-        response = session.get(url, params=params, timeout=15)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "it-IT,it;q=0.9",
+            "Origin": "https://app-easyfitpalestre.it",
+            "Referer": f"https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
+            "x-tenant": "easyfit",
+            "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
+            "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
+            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
+        }
+        
+        logger.info(f"🔍 Richiesta calendario: {start_date} → {end_date}")
+        
+        # USA LA SESSIONE (con cookie) invece di fare nuova richiesta
+        response = session.get(url, params=params, headers=headers, timeout=15)
         
         if response.status_code == 200:
             courses = response.json()
-            
-            target_datetime = f"{class_date}T{class_time}:00"
-            
-            for course in courses:
-                if course.get('name') == class_name:
-                    for slot in course.get('slots', []):
-                        slot_time = slot.get('startDateTime', '')
-                        if slot_time.startswith(target_datetime):
-                            course_id = slot.get('id')
-                            logger.info(f"✅ Trovato ID: {course_id}")
-                            return course_id, slot
-            
-            logger.warning(f"⚠️  Lezione non trovata")
-            return None, None
+            logger.info(f"✅ Calendario: {len(courses)} corsi")
+            return courses
         else:
-            logger.error(f"❌ Errore ricerca: {response.status_code}")
-            return None, None
+            logger.error(f"❌ Errore calendario: {response.status_code}")
+            logger.error(f"   Response: {response.text[:200]}")
+            return []
             
     except Exception as e:
-        logger.error(f"❌ Errore find_course: {e}")
-        return None, None
+        logger.error(f"❌ Errore get_calendar_courses: {e}")
+        return []
 
 
-def book_course_easyfit(session, course_appointment_id):
-    """Prenota corso su EasyFit con fallback automatico su lista d'attesa"""
+def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
+    """Prenota un corso su EasyFit"""
     try:
         logger.info(f"📝 Prenotazione ID: {course_appointment_id}")
         
         url = f"{EASYFIT_BASE_URL}/nox/v1/calendar/bookcourse"
+        
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://app-easyfitpalestre.it",
+            "Referer": "https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
+            "x-tenant": "easyfit",
+            "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
+            "x-nox-client-type": "WEB"
+        }
         
         # Tentativo 1: Prenotazione normale
         payload = {
@@ -189,252 +168,81 @@ def book_course_easyfit(session, course_appointment_id):
             "expectedCustomerStatus": "BOOKED"
         }
         
-        response = session.post(url, json=payload, timeout=10)
+        response = session.post(url, json=payload, headers=headers, timeout=10)
         
         if response.status_code == 200:
-            data = response.json()
-            status = data.get('participantStatus')
+            logger.info(f"✅ PRENOTATO!")
+            return True, "completed", response.json()
+        
+        # Se fallisce e try_waitlist è True, prova lista d'attesa
+        if try_waitlist:
+            logger.info(f"⏳ Tentativo lista d'attesa...")
             
-            if status == "BOOKED":
-                logger.info(f"✅ PRENOTATO!")
-                return True, "booked", data
-            else:
-                logger.warning(f"⚠️  Prenotazione normale fallita. Status: {status}")
-                # Lezione potrebbe essere piena, proviamo lista d'attesa
-        else:
-            logger.warning(f"⚠️  Prenotazione normale fallita: {response.status_code}")
-        
-        # Tentativo 2: Lista d'attesa
-        logger.info(f"🔄 Tentativo lista d'attesa...")
-        
-        payload_waitlist = {
-            "courseAppointmentId": course_appointment_id,
-            "expectedCustomerStatus": "WAITLISTED"
-        }
-        
-        response_waitlist = session.post(url, json=payload_waitlist, timeout=10)
-        
-        if response_waitlist.status_code == 200:
-            data_waitlist = response_waitlist.json()
-            status_waitlist = data_waitlist.get('participantStatus')
+            payload["expectedCustomerStatus"] = "WAITLISTED"
             
-            if status_waitlist == "WAITLISTED":
-                logger.info(f"⏳ LISTA D'ATTESA!")
-                return True, "waitlisted", data_waitlist
-            else:
-                logger.error(f"❌ Anche lista d'attesa fallita. Status: {status_waitlist}")
-                return False, "failed", data_waitlist
-        else:
-            logger.error(f"❌ Lista d'attesa fallita: {response_waitlist.status_code}")
-            return False, "failed", None
+            response = session.post(url, json=payload, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                logger.info(f"📋 LISTA D'ATTESA!")
+                return True, "waitlisted", response.json()
+        
+        logger.error(f"❌ Prenotazione fallita: {response.status_code}")
+        logger.error(f"   Response: {response.text[:200]}")
+        return False, "failed", None
             
     except Exception as e:
-        logger.error(f"❌ Errore prenotazione: {e}")
-        return False, "error", None
+        logger.error(f"❌ Errore book_course_easyfit: {e}")
+        return False, "failed", None
 
 
-# ============================================================================
-# FUNZIONE CHECK_AND_BOOK
-# ============================================================================
-
-def check_and_book(application):
-    """Controlla e prenota automaticamente"""
-    
-    logger.info("="*60)
-    logger.info("🔍 CONTROLLO PRENOTAZIONI")
-    logger.info(f"⏰ Ora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    current_hour = datetime.now().hour
-    
-    if not (8 <= current_hour < 21):
-        logger.info(f"⏰ Fuori orario (8-21)")
-        logger.info("="*60)
-        return
-    
-    logger.info("✅ Dentro orario attivo")
-    
-    conn = None
-    cur = None
-    
+def find_course_appointment_id(session, class_name, class_date, class_time):
+    """Trova il courseAppointmentId cercando nel calendario"""
     try:
-        conn = get_db_connection()
-        conn.autocommit = False
-        cur = conn.cursor()
-        logger.info("✅ Database connesso")
-    except Exception as e:
-        logger.error(f"❌ Errore DB: {e}")
-        return
-    
-    try:
-        now = datetime.now()
+        date_obj = datetime.strptime(class_date, '%Y-%m-%d')
+        start_date = date_obj.strftime('%Y-%m-%d')
+        end_date = date_obj.strftime('%Y-%m-%d')
         
-        cur.execute(
-            """
-            SELECT id, user_id, class_name, class_date, class_time
-            FROM bookings
-            WHERE status = 'pending'
-            AND booking_date <= %s
-            ORDER BY booking_date
-            """,
-            (now,)
-        )
+        logger.info(f"🔎 Cerco: {class_name} {class_date} {class_time}")
         
-        bookings_to_make = cur.fetchall()
+        courses = get_calendar_courses(session, start_date, end_date)
         
-        logger.info(f"📊 Prenotazioni da fare: {len(bookings_to_make)}")
+        for course in courses:
+            if course['name'].lower() == class_name.lower():
+                for slot in course.get('slots', []):
+                    slot_datetime_str = slot['startDateTime']
+                    slot_datetime = slot_datetime_str.split('[')[0]
+                    slot_time = slot_datetime.split('T')[1][:5]
+                    
+                    if slot_time == class_time:
+                        course_appointment_id = slot['id']
+                        
+                        logger.info(f"✅ Trovato ID: {course_appointment_id}")
+                        return course_appointment_id, slot
         
-        if not bookings_to_make:
-            logger.info("ℹ️  Nessuna prenotazione")
-            cur.close()
-            conn.close()
-            logger.info("="*60)
-            return
-        
-        for booking in bookings_to_make:
-            booking_id, user_id, class_name, class_date, class_time = booking
-            
-            logger.info("")
-            logger.info(f"{'─'*60}")
-            logger.info(f"📝 PRENOTAZIONE #{booking_id}")
-            logger.info(f"   📚 {class_name}")
-            logger.info(f"   📅 {class_date} ore {class_time}")
-            
-            # Login
-            session = easyfit_login()
-            
-            if not session:
-                logger.error(f"❌ Login fallito #{booking_id}")
-                send_telegram_notification(
-                    application, user_id, class_name,
-                    class_date, class_time, False
-                )
-                continue
-            
-            # Trova lezione
-            course_id, slot = find_course_appointment_id(
-                session, class_name, class_date, class_time
-            )
-            
-            if not course_id:
-                logger.error(f"❌ Lezione non trovata #{booking_id}")
-                send_telegram_notification(
-                    application, user_id, class_name,
-                    class_date, class_time, False
-                )
-                continue
-            
-            # Prenota
-            success, booking_type, result = book_course_easyfit(session, course_id)
-            
-            if success:
-                if booking_type == "booked":
-                    logger.info(f"✅ Prenotazione #{booking_id} CONFERMATA!")
-                    final_status = "completed"
-                elif booking_type == "waitlisted":
-                    logger.info(f"⏳ Prenotazione #{booking_id} - LISTA D'ATTESA!")
-                    final_status = "waitlisted"
-                
-                cur.execute(
-                    """
-                    UPDATE bookings
-                    SET status = %s
-                    WHERE id = %s
-                    """,
-                    (final_status, booking_id)
-                )
-                
-                conn.commit()
-                logger.info(f"💾 Database aggiornato")
-                
-                send_telegram_notification(
-                    application, user_id, class_name,
-                    class_date, class_time, True, booking_type
-                )
-                
-                logger.info(f"🎉 Completata!")
-            else:
-                logger.error(f"❌ Prenotazione #{booking_id} FALLITA!")
-                send_telegram_notification(
-                    application, user_id, class_name,
-                    class_date, class_time, False, "failed"
-                )
-            
-            logger.info(f"{'─'*60}")
-        
-        cur.close()
-        conn.close()
-        logger.info("✅ Controllo terminato")
+        logger.warning(f"⚠️ Corso non trovato")
+        return None, None
         
     except Exception as e:
-        logger.error(f"❌ ERRORE: {e}")
-        logger.exception("Stack trace:")
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
-    
-    logger.info("="*60)
+        logger.error(f"❌ Errore find_course_appointment_id: {e}")
+        return None, None
 
 
-def send_telegram_notification(application, user_id, class_name, class_date, class_time, success, booking_type="failed"):
-    """Invia notifica Telegram con gestione lista d'attesa"""
-    try:
-        if success:
-            if booking_type == "booked":
-                message = (
-                    f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
-                    f"📚 {class_name}\n"
-                    f"📅 {class_date}\n"
-                    f"🕐 {class_time}\n\n"
-                    f"Ci vediamo in palestra! 💪"
-                )
-            elif booking_type == "waitlisted":
-                message = (
-                    f"⏳ IN LISTA D'ATTESA\n\n"
-                    f"📚 {class_name}\n"
-                    f"📅 {class_date}\n"
-                    f"🕐 {class_time}\n\n"
-                    f"⚠️  La lezione era piena!\n"
-                    f"Sei stato inserito in lista d'attesa.\n\n"
-                    f"🔔 Ti avviseremo se si libera un posto!\n"
-                    f"Controlla l'app EasyFit per aggiornamenti."
-                )
-        else:
-            message = (
-                f"❌ PRENOTAZIONE NON POSSIBILE\n\n"
-                f"📚 {class_name}\n"
-                f"📅 {class_date}\n"
-                f"🕐 {class_time}\n\n"
-                f"La lezione è piena e anche la lista d'attesa.\n"
-                f"Prova manualmente su app EasyFit o scegli altra lezione."
-            )
-        
-        import asyncio
-        asyncio.run(application.bot.send_message(chat_id=user_id, text=message))
-        
-    except Exception as e:
-        logger.error(f"Errore notifica: {e}")
-
-
-# ============================================================================
-# HANDLER TELEGRAM
-# ============================================================================
+# =============================================================================
+# COMANDI TELEGRAM
+# =============================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /start"""
     user = update.effective_user
-    logger.info(f"📱 /start da {user.first_name}")
-    
     await update.message.reply_text(
         f"👋 Ciao {user.first_name}!\n\n"
         f"Sono il bot per prenotare le lezioni EasyFit.\n\n"
         f"🤖 Cosa posso fare:\n"
         f"• Prenotare lezioni 72 ore prima automaticamente\n"
-        f"• Calendario REALE da EasyFit\n"
-        f"• Attivo dalle 8 alle 21 ogni giorno\n\n"
-        f"📋 Comandi:\n"
-        f"/prenota - Programma prenotazione\n"
+        f"• Mostrarti le lezioni REALI disponibili da EasyFit\n"
+        f"• Attivo dalle 8 alle 21 ogni giorno\n"
+        f"• Notifiche quando prenoto\n\n"
+        f"📋 Comandi disponibili:\n"
+        f"/prenota - Programma una nuova prenotazione\n"
         f"/lista - Vedi prenotazioni programmate\n"
         f"/cancella - Cancella prenotazione\n"
         f"/help - Guida completa"
@@ -442,67 +250,68 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /prenota - Mostra lezioni dal calendario reale"""
-    user = update.effective_user
-    logger.info(f"📱 /prenota da {user.first_name}")
+    """
+    IMPORTANTE: Fa login UNA volta e salva la sessione in context.user_data
+    """
+    logger.info(f"📱 /prenota da {update.effective_user.first_name}")
     
-    await update.message.reply_text("🔍 Recupero calendario EasyFit...")
+    await update.message.reply_text(
+        "📅 Sto recuperando le lezioni disponibili da EasyFit...\n"
+        "⏳ Attendi qualche secondo..."
+    )
     
     try:
-        # Recupera calendario prossimi 7 giorni
+        # FASE 1: Login e salva sessione
+        session = easyfit_login()
+        
+        if not session:
+            await update.message.reply_text(
+                "❌ Impossibile connettersi a EasyFit.\n"
+                "Riprova tra qualche minuto."
+            )
+            return
+        
+        # SALVA SESSIONE nel context
+        context.user_data['easyfit_session'] = session
+        
+        # FASE 2: Recupera calendario
         today = datetime.now()
         start_date = today.strftime('%Y-%m-%d')
         end_date = (today + timedelta(days=7)).strftime('%Y-%m-%d')
         
-        logger.info(f"📅 Range: {start_date} → {end_date}")
-        courses = get_calendar_courses(start_date, end_date)
+        courses = get_calendar_courses(session, start_date, end_date)
         
         if not courses:
             await update.message.reply_text(
-                "❌ Impossibile recuperare il calendario.\n\n"
-                "Possibili cause:\n"
-                "• Problema temporaneo con EasyFit\n"
-                "• Nessuna lezione nei prossimi 7 giorni\n\n"
-                "Riprova tra qualche minuto o controlla l'app EasyFit."
+                "❌ Nessuna lezione trovata nei prossimi 7 giorni.\n"
+                "Riprova più tardi."
             )
             return
         
-        # Estrai nomi lezioni univoci
-        class_names = set()
+        # FASE 3: Mostra lezioni uniche
+        unique_courses = {}
         for course in courses:
-            if 'name' in course and course['name']:
-                class_names.add(course['name'])
+            course_name = course['name']
+            if course_name not in unique_courses:
+                unique_courses[course_name] = course
         
-        if not class_names:
-            await update.message.reply_text(
-                "ℹ️  Nessuna lezione disponibile nei prossimi 7 giorni."
-            )
-            return
-        
-        logger.info(f"📚 Lezioni trovate: {', '.join(sorted(class_names))}")
-        
-        # Salva calendario in context
-        context.user_data['calendar'] = courses
-        
-        # Crea bottoni
         keyboard = []
-        for class_name in sorted(class_names):
+        for course_name in sorted(unique_courses.keys()):
             keyboard.append([InlineKeyboardButton(
-                f"📚 {class_name}",
-                callback_data=f"class_{class_name}"
+                f"📚 {course_name}",
+                callback_data=f'class_{course_name}'
             )])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "📚 Che lezione vuoi prenotare?",
+            f"📚 Lezioni disponibili nei prossimi 7 giorni:\n\n"
+            f"💡 Seleziona la lezione che vuoi prenotare.",
             reply_markup=reply_markup
         )
         
     except Exception as e:
         logger.error(f"❌ Errore /prenota: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
         await update.message.reply_text(
             "❌ Si è verificato un errore.\n"
             "Riprova tra qualche minuto."
@@ -510,18 +319,31 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def class_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback - Lezione selezionata"""
+    """Usa la sessione salvata in context.user_data"""
     query = update.callback_query
     await query.answer()
     
     class_name = query.data.split('_', 1)[1]
     context.user_data['class_name'] = class_name
     
-    calendar = context.user_data.get('calendar', [])
+    # RECUPERA SESSIONE
+    session = context.user_data.get('easyfit_session')
     
-    # Trova date disponibili
+    if not session:
+        await query.edit_message_text(
+            "❌ Sessione scaduta. Riavvia con /prenota"
+        )
+        return
+    
+    today = datetime.now()
+    start_date = today.strftime('%Y-%m-%d')
+    end_date = (today + timedelta(days=7)).strftime('%Y-%m-%d')
+    
+    # USA LA SESSIONE SALVATA
+    courses = get_calendar_courses(session, start_date, end_date)
+    
     available_dates = {}
-    for course in calendar:
+    for course in courses:
         if course['name'] == class_name:
             for slot in course.get('slots', []):
                 slot_datetime = slot['startDateTime'].split('[')[0]
@@ -533,11 +355,10 @@ async def class_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not available_dates:
         await query.edit_message_text(
-            f"❌ Nessuna lezione di {class_name} disponibile."
+            f"❌ Nessuna lezione di {class_name} disponibile nei prossimi 7 giorni."
         )
         return
     
-    # Mostra giorni
     keyboard = []
     for date_str in sorted(available_dates.keys()):
         date_obj = datetime.strptime(date_str, '%Y-%m-%d')
@@ -552,47 +373,67 @@ async def class_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(
-        f"📚 {class_name}\n\n📅 Quale giorno?",
+        f"📚 {class_name}\n\n"
+        f"📅 Quale giorno?",
         reply_markup=reply_markup
     )
 
 
 async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback - Data selezionata"""
+    """Usa la sessione salvata in context.user_data"""
     query = update.callback_query
     await query.answer()
     
     date_str = query.data.split('_')[1]
     context.user_data['date'] = date_str
     
-    calendar = context.user_data.get('calendar', [])
-    class_name = context.user_data.get('class_name')
+    class_name = context.user_data['class_name']
     
-    # Trova orari disponibili
-    available_times = set()
+    # RECUPERA SESSIONE
+    session = context.user_data.get('easyfit_session')
     
-    for course in calendar:
-        if course['name'] == class_name:
-            for slot in course.get('slots', []):
-                slot_datetime = slot['startDateTime'].split('[')[0]
-                slot_date = slot_datetime.split('T')[0]
-                
-                if slot_date == date_str:
-                    time_str = slot_datetime.split('T')[1][:5]  # HH:MM
-                    available_times.add(time_str)
-    
-    if not available_times:
+    if not session:
         await query.edit_message_text(
-            f"❌ Nessun orario disponibile per questa data."
+            "❌ Sessione scaduta. Riavvia con /prenota"
         )
         return
     
-    # Mostra orari
+    # USA LA SESSIONE SALVATA
+    courses = get_calendar_courses(session, date_str, date_str)
+    
+    available_times = []
+    for course in courses:
+        if course['name'] == class_name:
+            for slot in course.get('slots', []):
+                slot_datetime = slot['startDateTime'].split('[')[0]
+                time_str = slot_datetime.split('T')[1][:5]
+                
+                instructor = slot['employees'][0]['displayedName'] if slot.get('employees') else 'N/A'
+                location = slot['locations'][0]['name'] if slot.get('locations') else 'N/A'
+                bookable = slot.get('bookable', False)
+                
+                available_times.append({
+                    'time': time_str,
+                    'instructor': instructor,
+                    'location': location,
+                    'bookable': bookable,
+                    'slot': slot
+                })
+    
+    if not available_times:
+        await query.edit_message_text(
+            f"❌ Nessun orario disponibile per {class_name} in questa data."
+        )
+        return
+    
     keyboard = []
-    for time_str in sorted(available_times):
+    for item in available_times:
+        status = "✅" if item['bookable'] else "⏰"
+        button_text = f"{status} {item['time']} - {item['instructor']}"
+        
         keyboard.append([InlineKeyboardButton(
-            f"🕐 {time_str}",
-            callback_data=f"time_{time_str}"
+            button_text,
+            callback_data=f"time_{item['time']}"
         )])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -603,27 +444,27 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"📚 {class_name}\n"
         f"📅 {day_name} {date_obj.strftime('%d/%m/%Y')}\n\n"
-        f"🕐 Che orario?",
+        f"🕐 Che orario?\n\n"
+        f"✅ = Prenotabile ora\n"
+        f"⏰ = Prenotabile tra 72h",
         reply_markup=reply_markup
     )
 
 
 async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback - Orario selezionato e conferma"""
+    """Salva la prenotazione nel database"""
     query = update.callback_query
     await query.answer()
     
     time_str = query.data.split('_')[1]
+    context.user_data['time'] = time_str
     
-    class_name = context.user_data.get('class_name')
-    date_str = context.user_data.get('date')
-    user_id = str(query.from_user.id)
+    class_name = context.user_data['class_name']
+    class_date = context.user_data['date']
     
-    # Calcola booking_date (72h prima)
-    class_datetime = datetime.strptime(f"{date_str} {time_str}", '%Y-%m-%d %H:%M')
+    class_datetime = datetime.strptime(f"{class_date} {time_str}", '%Y-%m-%d %H:%M')
     booking_datetime = class_datetime - timedelta(hours=72)
     
-    # Salva nel database
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -635,7 +476,14 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (user_id, class_name, date_str, time_str, booking_datetime, 'pending')
+            (
+                str(query.from_user.id),
+                class_name,
+                class_date,
+                time_str,
+                booking_datetime,
+                'pending'
+            )
         )
         
         booking_id = cur.fetchone()[0]
@@ -643,7 +491,7 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.close()
         conn.close()
         
-        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        date_obj = datetime.strptime(class_date, '%Y-%m-%d')
         day_name = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'][date_obj.weekday()]
         
         await query.edit_message_text(
@@ -655,21 +503,20 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"   {booking_datetime.strftime('%d/%m/%Y alle %H:%M')}\n"
             f"   (72 ore prima)\n\n"
             f"📲 Ti avviserò quando prenoto!\n\n"
-            f"ID: #{booking_id}"
+            f"ID Prenotazione: #{booking_id}"
         )
         
-        logger.info(f"✅ Prenotazione #{booking_id} salvata da utente {user_id}")
+        logger.info(f"✅ Prenotazione #{booking_id} salvata: {class_name} - {class_date} {time_str}")
         
     except Exception as e:
-        logger.error(f"Errore salvataggio: {e}")
-        await query.edit_message_text("❌ Errore nel salvare. Riprova.")
+        logger.error(f"❌ Errore salvataggio: {e}")
+        await query.edit_message_text(
+            "❌ Errore nel salvare la prenotazione. Riprova."
+        )
 
 
 async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /lista - Mostra prenotazioni programmate"""
-    user = update.effective_user
-    user_id = str(user.id)
-    logger.info(f"📱 /lista da {user.first_name}")
+    user_id = str(update.effective_user.id)
     
     try:
         conn = get_db_connection()
@@ -679,7 +526,7 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """
             SELECT id, class_name, class_date, class_time, booking_date, status
             FROM bookings
-            WHERE user_id = %s
+            WHERE user_id = %s AND status IN ('pending', 'waitlisted')
             ORDER BY class_date, class_time
             """,
             (user_id,)
@@ -691,7 +538,7 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not bookings:
             await update.message.reply_text(
-                "📋 Non hai prenotazioni.\n\n"
+                "📋 Non hai prenotazioni programmate.\n\n"
                 "Usa /prenota per programmarne una!"
             )
             return
@@ -700,160 +547,303 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         for booking in bookings:
             booking_id, class_name, class_date, class_time, booking_date, status = booking
-            
             date_obj = datetime.strptime(str(class_date), '%Y-%m-%d')
             day_name = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'][date_obj.weekday()]
             
-            if status == 'pending':
-                emoji = "⏳"
-                status_text = "Programmata"
-            elif status == 'completed':
-                emoji = "✅"
-                status_text = "Prenotata"
-            elif status == 'waitlisted':
-                emoji = "📋"
-                status_text = "Lista d'attesa"
-            elif status == 'cancelled':
-                emoji = "🚫"
-                status_text = "Annullata"
-            else:
-                emoji = "❌"
-                status_text = "Fallita"
+            status_icon = "📋" if status == "waitlisted" else "⏳"
+            status_text = "Lista d'attesa" if status == "waitlisted" else "Programmata"
             
-            message += f"{emoji} #{booking_id} - {class_name}\n"
-            message += f"   📅 {day_name} {date_obj.strftime('%d/%m')} ore {class_time}\n"
+            message += f"{status_icon} #{booking_id} - {class_name}\n"
+            message += f"   📅 {day_name} {date_obj.strftime('%d/%m/%Y')} ore {class_time}\n"
             message += f"   Status: {status_text}\n"
             
-            if status == 'pending':
-                message += f"   ⏰ Prenoterò: {booking_date.strftime('%d/%m alle %H:%M')}\n"
+            if status == "pending":
+                message += f"   ⏰ Prenoterò: {booking_date.strftime('%d/%m/%Y alle %H:%M')}\n"
             
             message += "\n"
         
-        message += "💡 Usa /cancella <ID> per annullare"
+        message += "💡 Usa /cancella per cancellare una prenotazione"
         
         await update.message.reply_text(message)
         
     except Exception as e:
-        logger.error(f"Errore /lista: {e}")
-        await update.message.reply_text("❌ Errore.")
+        logger.error(f"❌ Errore lista: {e}")
+        await update.message.reply_text("❌ Errore nel recuperare le prenotazioni.")
 
 
 async def cancella(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /cancella - Cancella prenotazione"""
-    user = update.effective_user
-    user_id = str(user.id)
-    logger.info(f"📱 /cancella da {user.first_name}")
-    
-    # Verifica argomento
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️  Specifica l'ID da cancellare.\n\n"
-            "Esempio: /cancella 5\n\n"
-            "Usa /lista per vedere gli ID."
-        )
-        return
-    
-    try:
-        booking_id = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ ID non valido. Usa un numero.")
-        return
+    user_id = str(update.effective_user.id)
     
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Verifica che esista e sia dell'utente
         cur.execute(
             """
-            SELECT status FROM bookings
+            SELECT id, class_name, class_date, class_time
+            FROM bookings
+            WHERE user_id = %s AND status IN ('pending', 'waitlisted')
+            ORDER BY class_date, class_time
+            """,
+            (user_id,)
+        )
+        
+        bookings = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        if not bookings:
+            await update.message.reply_text(
+                "📋 Non hai prenotazioni da cancellare."
+            )
+            return
+        
+        keyboard = []
+        for booking in bookings:
+            booking_id, class_name, class_date, class_time = booking
+            date_obj = datetime.strptime(str(class_date), '%Y-%m-%d')
+            day_name = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'][date_obj.weekday()]
+            
+            button_text = f"#{booking_id} - {class_name} - {day_name} {date_obj.strftime('%d/%m')} {class_time}"
+            keyboard.append([InlineKeyboardButton(
+                button_text,
+                callback_data=f"cancel_{booking_id}"
+            )])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "🗑️ Quale prenotazione vuoi cancellare?",
+            reply_markup=reply_markup
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Errore cancella: {e}")
+        await update.message.reply_text("❌ Errore nel recuperare le prenotazioni.")
+
+
+async def cancel_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    booking_id = int(query.data.split('_')[1])
+    user_id = str(query.from_user.id)
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute(
+            """
+            DELETE FROM bookings
             WHERE id = %s AND user_id = %s
             """,
             (booking_id, user_id)
-        )
-        
-        result = cur.fetchone()
-        
-        if not result:
-            await update.message.reply_text(
-                f"❌ Prenotazione #{booking_id} non trovata."
-            )
-            cur.close()
-            conn.close()
-            return
-        
-        status = result[0]
-        
-        if status != 'pending':
-            await update.message.reply_text(
-                f"⚠️  Prenotazione #{booking_id} già {status}.\n"
-                f"Puoi cancellare solo prenotazioni 'pending'."
-            )
-            cur.close()
-            conn.close()
-            return
-        
-        # Cancella
-        cur.execute(
-            """
-            UPDATE bookings
-            SET status = 'cancelled'
-            WHERE id = %s
-            """,
-            (booking_id,)
         )
         
         conn.commit()
         cur.close()
         conn.close()
         
-        await update.message.reply_text(
+        await query.edit_message_text(
             f"✅ Prenotazione #{booking_id} cancellata!"
         )
         
-        logger.info(f"✅ Prenotazione #{booking_id} cancellata da {user_id}")
+        logger.info(f"✅ Prenotazione #{booking_id} cancellata da utente {user_id}")
         
     except Exception as e:
-        logger.error(f"Errore /cancella: {e}")
-        await update.message.reply_text("❌ Errore.")
+        logger.error(f"❌ Errore cancellazione: {e}")
+        await query.edit_message_text(
+            "❌ Errore nella cancellazione. Riprova."
+        )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando /help"""
     await update.message.reply_text(
         "📖 GUIDA EASYFIT BOT\n\n"
-        "🤖 Cosa fa:\n"
-        "Prenota automaticamente le lezioni EasyFit "
-        "esattamente 72 ore prima dell'inizio.\n\n"
+        "🤖 Cosa fa questo bot:\n"
+        "Prenota automaticamente le tue lezioni EasyFit "
+        "esattamente 72 ore prima dell'inizio.\n"
+        "Mostra le lezioni REALI disponibili dal calendario EasyFit!\n\n"
         "📋 COMANDI:\n\n"
-        "/prenota\n"
-        "   Programma una nuova prenotazione.\n"
-        "   Scegli lezione, giorno e orario dal calendario reale.\n"
+        "/prenota - Programma una nuova prenotazione\n"
+        "   Vedi lezioni reali, scegli giorno e orario.\n"
         "   Il bot prenoterà automaticamente 72h prima.\n\n"
-        "/lista\n"
-        "   Vedi tutte le prenotazioni programmate.\n\n"
-        "/cancella <ID>\n"
-        "   Cancella una prenotazione programmata.\n"
-        "   Esempio: /cancella 5\n\n"
+        "/lista - Vedi tutte le prenotazioni programmate\n"
+        "   Mostra cosa hai in programma.\n\n"
+        "/cancella - Cancella una prenotazione\n"
+        "   Ti mostrerò la lista e scegli quale cancellare.\n\n"
         "⏰ ORARI:\n"
-        "Attivo dalle 8:00 alle 21:00 ogni giorno.\n"
-        "Controlla ogni 2 minuti.\n\n"
+        "Il bot è attivo dalle 8:00 alle 21:00 ogni giorno.\n"
+        "Controlla ogni 2 minuti se ci sono prenotazioni da fare.\n\n"
         "📲 NOTIFICHE:\n"
-        "Riceverai un messaggio quando prenoto per te!\n\n"
-        "✅ Le prenotazioni sono REALI su app EasyFit."
+        "Riceverai un messaggio quando il bot prenota per te!\n\n"
+        "🎯 NOVITÀ: Il bot ora mostra le lezioni VERE da EasyFit! 🎉\n\n"
+        "📋 LISTA D'ATTESA:\n"
+        "Se una lezione è piena, il bot prova automaticamente\n"
+        "ad iscriverti alla lista d'attesa!"
     )
 
 
-# ============================================================================
-# HEALTH CHECK
-# ============================================================================
+def send_telegram_notification(application, user_id, class_name, class_date, class_time, status):
+    """Invia notifica Telegram dopo la prenotazione"""
+    try:
+        import asyncio
+        
+        date_obj = datetime.strptime(class_date, '%Y-%m-%d')
+        day_name = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'][date_obj.weekday()]
+        
+        if status == "completed":
+            message = (
+                f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
+                f"📚 {class_name}\n"
+                f"📅 {day_name} {date_obj.strftime('%d/%m/%Y')}\n"
+                f"🕐 {class_time}\n\n"
+                f"Ci vediamo in palestra! 💪"
+            )
+        elif status == "waitlisted":
+            message = (
+                f"⏳ IN LISTA D'ATTESA\n\n"
+                f"📚 {class_name}\n"
+                f"📅 {day_name} {date_obj.strftime('%d/%m/%Y')}\n"
+                f"🕐 {class_time}\n\n"
+                f"⚠️ La lezione era piena!\n"
+                f"Sei stato inserito in lista d'attesa.\n\n"
+                f"🔔 Ti avviseremo se si libera un posto!\n"
+                f"Controlla l'app EasyFit per aggiornamenti."
+            )
+        else:
+            message = (
+                f"❌ PRENOTAZIONE NON POSSIBILE\n\n"
+                f"📚 {class_name}\n"
+                f"📅 {day_name} {date_obj.strftime('%d/%m/%Y')}\n"
+                f"🕐 {class_time}\n\n"
+                f"La lezione è piena e anche la lista d'attesa.\n"
+                f"Prova manualmente su app EasyFit o scegli altra lezione."
+            )
+        
+        asyncio.run(application.bot.send_message(chat_id=user_id, text=message))
+        logger.info(f"📲 Notifica inviata a {user_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Errore invio notifica: {e}")
+
+
+def check_and_book(application):
+    """Controlla e prenota (chiamata dallo scheduler)"""
+    global _global_session
+    
+    current_hour = datetime.now().hour
+    if not (8 <= current_hour < 21):
+        logger.info("⏰ Fuori orario attivo (8-21)")
+        return
+    
+    logger.info("🔍 CONTROLLO PRENOTAZIONI")
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        now = datetime.now()
+        two_hours_ago = now - timedelta(hours=2)
+        
+        cur.execute(
+            """
+            SELECT id, user_id, class_name, class_date, class_time
+            FROM bookings
+            WHERE status = 'pending'
+            AND booking_date BETWEEN %s AND %s
+            """,
+            (two_hours_ago, now)
+        )
+        
+        bookings_to_make = cur.fetchall()
+        
+        if not bookings_to_make:
+            logger.info("ℹ️ Nessuna prenotazione")
+            cur.close()
+            conn.close()
+            return
+        
+        # FASE 1: Login UNICO per tutte le prenotazioni
+        if not _global_session:
+            _global_session = easyfit_login()
+        
+        if not _global_session:
+            logger.error("❌ Login fallito")
+            cur.close()
+            conn.close()
+            return
+        
+        # FASE 2: Processa ogni prenotazione
+        for booking in bookings_to_make:
+            booking_id, user_id, class_name, class_date, class_time = booking
+            
+            logger.info(f"📝 PRENOTAZIONE #{booking_id}")
+            logger.info(f"   📚 {class_name}")
+            logger.info(f"   📅 {class_date} ore {class_time}")
+            
+            # Trova courseAppointmentId
+            course_appointment_id, slot = find_course_appointment_id(
+                _global_session, class_name, class_date, class_time
+            )
+            
+            if not course_appointment_id:
+                logger.error(f"❌ Corso non trovato")
+                send_telegram_notification(application, user_id, class_name, class_date, class_time, "failed")
+                
+                # Marca come completed anche se fallita
+                cur.execute(
+                    "UPDATE bookings SET status = 'completed' WHERE id = %s",
+                    (booking_id,)
+                )
+                conn.commit()
+                continue
+            
+            # Prenota (con tentativo waitlist automatico)
+            success, final_status, result = book_course_easyfit(_global_session, course_appointment_id)
+            
+            if success:
+                # Aggiorna database
+                cur.execute(
+                    "UPDATE bookings SET status = %s WHERE id = %s",
+                    (final_status, booking_id)
+                )
+                conn.commit()
+                
+                # Notifica
+                send_telegram_notification(application, user_id, class_name, class_date, class_time, final_status)
+                
+                logger.info(f"🎉 Completata! Status: {final_status}")
+            else:
+                send_telegram_notification(application, user_id, class_name, class_date, class_time, "failed")
+                
+                # Marca come completed anche se fallita
+                cur.execute(
+                    "UPDATE bookings SET status = 'completed' WHERE id = %s",
+                    (booking_id,)
+                )
+                conn.commit()
+                
+                logger.error(f"❌ Fallita!")
+        
+        cur.close()
+        conn.close()
+        
+    except Exception as e:
+        logger.error(f"❌ Errore check_and_book: {e}")
+
+
+# =============================================================================
+# HEALTH CHECK SERVER (per Render.com)
+# =============================================================================
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b'OK')
+        self.wfile.write(b'Bot EasyFit is running OK')
     
     def log_message(self, format, *args):
         pass
@@ -861,45 +851,29 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 def start_health_server():
     port = int(os.environ.get('PORT', 10000))
+    
     try:
         server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        logger.info(f"🌐 Health server: porta {port}")
+        logger.info(f"🌐 Health check server su porta {port}")
     except Exception as e:
-        logger.error(f"❌ Health server: {e}")
+        logger.error(f"❌ Errore health server: {e}")
 
-
-# ============================================================================
-# MAIN
-# ============================================================================
 
 def main():
-    logger.info("")
-    logger.info("="*70)
-    logger.info("🚀 EASYFIT BOT - VERSIONE DEFINITIVA")
-    logger.info("="*70)
-    logger.info("✅ API EasyFit reale")
-    logger.info("✅ Calendario reale")
-    logger.info("✅ Tutti i comandi attivi")
-    logger.info("="*70)
-    
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Handler comandi
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("prenota", prenota))
     application.add_handler(CommandHandler("lista", lista))
     application.add_handler(CommandHandler("cancella", cancella))
     application.add_handler(CommandHandler("help", help_command))
     
-    # Callback handlers
     application.add_handler(CallbackQueryHandler(class_selected, pattern="^class_"))
     application.add_handler(CallbackQueryHandler(date_selected, pattern="^date_"))
     application.add_handler(CallbackQueryHandler(time_selected, pattern="^time_"))
-    
-    # Scheduler ogni 2 minuti (8-21)
-    logger.info("⏰ Scheduler: ogni 2 minuti (8-21)")
+    application.add_handler(CallbackQueryHandler(cancel_booking, pattern="^cancel_"))
     
     scheduler = BackgroundScheduler()
     scheduler.add_job(
@@ -910,15 +884,14 @@ def main():
     )
     scheduler.start()
     
-    logger.info("✅ Scheduler avviato")
-    
     start_health_server()
     
-    logger.info("")
-    logger.info("="*70)
-    logger.info("✅ BOT PRONTO")
-    logger.info("="*70)
-    logger.info("")
+    logger.info("="*60)
+    logger.info("🚀 BOT AVVIATO CON LEZIONI REALI DA EASYFIT!")
+    logger.info("⏰ Attivo dalle 8:00 alle 21:00 (controllo ogni 2 minuti)")
+    logger.info("🎯 Calendario REALE da app-easyfitpalestre.it")
+    logger.info("📋 Gestione automatica lista d'attesa")
+    logger.info("="*60)
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
