@@ -362,6 +362,9 @@ def send_telegram_notification(application, user_id, class_name, class_date, cla
 # ============================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    logger.info(f"📱 Comando /start ricevuto da {user.first_name} (ID: {user.id})")
+    
     await update.message.reply_text(
         "🤖 Bot EasyFit\n\n"
         "✅ Sistema attivo e funzionante\n"
@@ -375,17 +378,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Forza controllo manuale"""
+    user = update.effective_user
+    logger.info(f"📱 Comando /test ricevuto da {user.first_name} (ID: {user.id})")
+    
     await update.message.reply_text("🔍 Controllo in corso...")
     
     try:
         check_and_book(context.application)
         await update.message.reply_text("✅ Fatto! Controlla i logs su Render.")
     except Exception as e:
+        logger.error(f"❌ Errore nel comando /test: {e}")
         await update.message.reply_text(f"❌ Errore: {e}")
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mostra prenotazioni"""
+    user = update.effective_user
+    logger.info(f"📱 Comando /status ricevuto da {user.first_name} (ID: {user.id})")
+    
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -416,7 +426,24 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
     except Exception as e:
+        logger.error(f"❌ Errore nel comando /status: {e}")
         await update.message.reply_text(f"❌ Errore: {e}")
+
+
+async def echo_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler di debug - logg a tutti i messaggi"""
+    if update.message:
+        user = update.effective_user
+        text = update.message.text
+        logger.info(f"📩 Messaggio ricevuto da {user.first_name} (ID: {user.id}): '{text}'")
+        await update.message.reply_text(
+            f"📱 Bot attivo!\n"
+            f"Hai scritto: {text}\n\n"
+            f"Comandi disponibili:\n"
+            f"/start - Informazioni\n"
+            f"/test - Test prenotazioni\n"
+            f"/status - Vedi prenotazioni"
+        )
 
 
 # ============================================================================
@@ -466,6 +493,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("test", test_command))
     application.add_handler(CommandHandler("status", status_command))
+    
+    # Handler per TUTTI i messaggi (debug)
+    from telegram.ext import MessageHandler, filters
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo_all))
     
     # Scheduler
     logger.info("⏰ Scheduler: ogni 2 minuti (8-21)")
