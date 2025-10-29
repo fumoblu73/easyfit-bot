@@ -125,6 +125,10 @@ def get_calendar_courses(session, start_date, end_date):
             "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
         }
         
+        # IMPORTANTE: Aggiungi sessionId se disponibile
+        if hasattr(session, 'session_id') and session.session_id:
+            headers['x-nox-session-id'] = session.session_id
+        
         logger.info(f"🔍 Richiesta calendario: {start_date} → {end_date}")
         
         # USA LA SESSIONE (con cookie) invece di fare nuova richiesta
@@ -149,18 +153,32 @@ def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
     try:
         logger.info(f"📝 Prenotazione ID: {course_appointment_id}")
         
+        # DEBUG: Verifica cookie nella sessione
+        cookie_names = list(session.cookies.keys())
+        logger.info(f"🍪 Cookie nella sessione: {cookie_names}")
+        
         url = f"{EASYFIT_BASE_URL}/nox/v1/calendar/bookcourse"
         
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "it-IT,it;q=0.9",
             "Origin": "https://app-easyfitpalestre.it",
             "Referer": "https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
             "x-tenant": "easyfit",
             "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
-            "x-nox-client-type": "WEB"
+            "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
+            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
         }
+        
+        # CRITICO: Aggiungi sessionId per autenticazione!
+        if hasattr(session, 'session_id') and session.session_id:
+            headers['x-nox-session-id'] = session.session_id
+            logger.info(f"🔑 SessionID aggiunto nell'header")
+        else:
+            logger.warning(f"⚠️  SessionID non disponibile!")
         
         # Tentativo 1: Prenotazione normale
         payload = {
@@ -168,11 +186,18 @@ def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
             "expectedCustomerStatus": "BOOKED"
         }
         
+        logger.info(f"📤 Invio richiesta prenotazione normale...")
+        
         response = session.post(url, json=payload, headers=headers, timeout=10)
         
         if response.status_code == 200:
             logger.info(f"✅ PRENOTATO!")
             return True, "completed", response.json()
+        
+        # Log dettagliato dell'errore
+        logger.error(f"❌ Prenotazione normale fallita: {response.status_code}")
+        logger.error(f"   Response body: {response.text}")
+        logger.error(f"   Response headers: {dict(response.headers)}")
         
         # Se fallisce e try_waitlist è True, prova lista d'attesa
         if try_waitlist:
