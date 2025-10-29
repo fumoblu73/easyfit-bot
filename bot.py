@@ -197,7 +197,13 @@ def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
 def find_course_appointment_id(session, class_name, class_date, class_time):
     """Trova il courseAppointmentId cercando nel calendario"""
     try:
-        date_obj = datetime.strptime(class_date, '%Y-%m-%d')
+        # class_date può essere str o datetime.date dal database
+        if isinstance(class_date, str):
+            date_obj = datetime.strptime(class_date, '%Y-%m-%d')
+        else:
+            # È già un oggetto date dal database
+            date_obj = class_date
+        
         start_date = date_obj.strftime('%Y-%m-%d')
         end_date = date_obj.strftime('%Y-%m-%d')
         
@@ -756,6 +762,7 @@ def check_and_book(application):
                 
                 # Notifica utente
                 try:
+                    import asyncio
                     asyncio.run(
                         application.bot.send_message(
                             chat_id=user_id,
