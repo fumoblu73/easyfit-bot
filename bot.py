@@ -421,10 +421,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def login_easyfit():
     """Effettua login su EasyFit e ottiene token"""
     try:
-        url = "https://app-easyfitpalestre.it/nox/v1/auth/login"
+        url = "https://app-easyfitpalestre.it/login"
         
         payload = {
-            "email": EASYFIT_EMAIL,
+            "username": EASYFIT_EMAIL,
             "password": EASYFIT_PASSWORD
         }
         
@@ -435,21 +435,19 @@ def login_easyfit():
         
         logger.info(f"🔐 Tentativo login...")
         logger.info(f"   URL: {url}")
-        logger.info(f"   Email: {EASYFIT_EMAIL}")
-        logger.info(f"   Password: {'*' * len(EASYFIT_PASSWORD)}")
+        logger.info(f"   Username: {EASYFIT_EMAIL}")
         
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         
         logger.info(f"📥 Response Status: {response.status_code}")
-        logger.info(f"📥 Response Headers: {dict(response.headers)}")
         logger.info(f"📥 Response Body: {response.text}")
         
         if response.status_code == 200:
             data = response.json()
-            token = data.get('accessToken')
+            token = data.get('sessionId') or data.get('access_token')
             if token:
                 logger.info("✅ Login EasyFit OK")
-                logger.info(f"   Token: {token[:50]}...")
+                logger.info(f"   Session ID: {token[:30]}...")
                 return token
             else:
                 logger.error("❌ Token non trovato nella risposta")
