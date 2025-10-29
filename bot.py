@@ -428,19 +428,41 @@ def login_easyfit():
             "password": EASYFIT_PASSWORD
         }
         
-        response = requests.post(url, json=payload, timeout=10)
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        
+        logger.info(f"🔐 Tentativo login...")
+        logger.info(f"   URL: {url}")
+        logger.info(f"   Email: {EASYFIT_EMAIL}")
+        logger.info(f"   Password: {'*' * len(EASYFIT_PASSWORD)}")
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        logger.info(f"📥 Response Status: {response.status_code}")
+        logger.info(f"📥 Response Headers: {dict(response.headers)}")
+        logger.info(f"📥 Response Body: {response.text}")
         
         if response.status_code == 200:
             data = response.json()
             token = data.get('accessToken')
-            logger.info("✅ Login EasyFit OK")
-            return token
+            if token:
+                logger.info("✅ Login EasyFit OK")
+                logger.info(f"   Token: {token[:50]}...")
+                return token
+            else:
+                logger.error("❌ Token non trovato nella risposta")
+                return None
         else:
             logger.error(f"❌ Login fallito: {response.status_code}")
+            logger.error(f"   Body: {response.text}")
             return None
             
     except Exception as e:
         logger.error(f"❌ Errore login: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 def get_calendar(token):
