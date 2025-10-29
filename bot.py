@@ -98,33 +98,59 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
+        # DEBUG: Log primo elemento per vedere struttura
+        if calendar and len(calendar) > 0:
+            logger.info(f"🔍 Struttura primo corso:")
+            logger.info(f"   Keys: {list(calendar[0].keys())}")
+            logger.info(f"   Primo corso: {calendar[0]}")
+        
         # Filtra lezioni future (prossimi 7 giorni)
         now = datetime.now()
         seven_days = now + timedelta(days=7)
         
         # Raggruppa per nome lezione
         classes = {}
+        
         for course in calendar:
-            class_name = course.get('courseName', 'Sconosciuto')
-            if class_name not in classes:
-                classes[class_name] = []
+            class_name = course.get('name', 'Sconosciuto')
             
-            # Parsing data
-            start_time = course.get('startTime')
-            if start_time:
-                # Parse diverso: formato ISO senza Z
-                try:
-                    lesson_date = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                except:
-                    continue
+            # I corsi hanno slots dentro
+            slots = course.get('slots', [])
+            
+            for slot in slots:
+                # DEBUG
+                if len(classes) == 0:
+                    logger.info(f"🔍 Struttura primo slot:")
+                    logger.info(f"   Keys: {list(slot.keys())}")
+                    logger.info(f"   Slot: {slot}")
                 
-                # Solo lezioni future nei prossimi 7 giorni
-                if now < lesson_date < seven_days:
-                    classes[class_name].append({
-                        'id': course.get('id'),
-                        'date': lesson_date,
-                        'instructor': course.get('instructorName', 'N/A')
-                    })
+                # Parsing data
+                start_time = slot.get('startDateTime')
+                if start_time:
+                    try:
+                        # Formato: "2025-10-30T10:00:00[Europe/Rome]"
+                        # Rimuovi timezone bracket
+                        clean_time = start_time.split('[')[0]
+                        lesson_date = datetime.fromisoformat(clean_time)
+                        
+                        # Solo lezioni future nei prossimi 7 giorni
+                        if now < lesson_date < seven_days:
+                            if class_name not in classes:
+                                classes[class_name] = []
+                            
+                            classes[class_name].append({
+                                'id': slot.get('id'),
+                                'date': lesson_date,
+                                'instructor': slot.get('instructorName', 'N/A')
+                            })
+                    except Exception as e:
+                        logger.error(f"Errore parsing data: {e}")
+                        logger.error(f"   startTime: {start_time}")
+                        continue
+        
+        logger.info(f"📊 Trovate {len(classes)} tipologie di lezioni")
+        for cn, lessons in classes.items():
+            logger.info(f"   {cn}: {len(lessons)} lezioni")
         
         # Crea bottoni per tipologie lezioni
         keyboard = []
