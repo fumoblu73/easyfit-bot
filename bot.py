@@ -421,16 +421,32 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def login_easyfit():
     """Effettua login su EasyFit e ottiene token"""
     try:
+        import base64
+        
         url = "https://app-easyfitpalestre.it/login"
+        
+        # Basic Auth
+        credentials = f"{EASYFIT_EMAIL}:{EASYFIT_PASSWORD}"
+        basic_auth = base64.b64encode(credentials.encode()).decode()
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "Accept-Language": "it-IT,it;q=0.9",
+            "Authorization": f"Basic {basic_auth}",
+            "Origin": "https://app-easyfitpalestre.it",
+            "Referer": "https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "x-tenant": "easyfit",
+            "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
+            "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
+            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
+        }
         
         payload = {
             "username": EASYFIT_EMAIL,
             "password": EASYFIT_PASSWORD
-        }
-        
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
         
         logger.info(f"🔐 Tentativo login...")
