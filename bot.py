@@ -564,7 +564,14 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         for booking in bookings:
             booking_id, class_name, class_date, class_time, booking_date, status = booking
-            date_obj = datetime.strptime(str(class_date), '%Y-%m-%d')
+            
+            # Gestione date: può essere str o datetime.date
+            if isinstance(class_date, str):
+                date_obj = datetime.strptime(class_date, '%Y-%m-%d')
+            else:
+                # È già datetime.date dal database
+                date_obj = class_date
+            
             day_name = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'][date_obj.weekday()]
             
             if status == 'waitlisted':
@@ -587,6 +594,8 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Errore recupero prenotazioni: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         await update.message.reply_text("❌ Errore nel recuperare le prenotazioni.")
 
 
