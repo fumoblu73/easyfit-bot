@@ -7,6 +7,7 @@ import psycopg2
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
 import threading
+import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Configurazione logging
@@ -697,18 +698,35 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SCHEDULER - CONTROLLA E PRENOTA
 # =============================================================================
 
-async def send_notification_async(application, user_id, message):
+async def send_notification_async(bot, user_id, message):
     """
-    FIX CRITICO: Invia notifica usando application.create_task()
-    invece di asyncio.run() che chiude l'event loop!
+    Funzione asincrona per inviare notifiche
     """
     try:
-        await application.bot.send_message(
+        await bot.send_message(
             chat_id=user_id,
             text=message
         )
+        logger.info(f"📲 Notifica inviata a {user_id}")
     except Exception as e:
         logger.error(f"❌ Errore invio notifica: {e}")
+
+
+def send_notification_from_thread(bot, loop, user_id, message):
+    """
+    FIX DEFINITIVO: Usa asyncio.run_coroutine_threadsafe()
+    per chiamare coroutine asincrone da thread sincrono (scheduler)
+    """
+    try:
+        # Schedula la coroutine nell'event loop del bot
+        future = asyncio.run_coroutine_threadsafe(
+            send_notification_async(bot, user_id, message),
+            loop
+        )
+        # Aspetta che completi (con timeout di 10 secondi)
+        future.result(timeout=10)
+    except Exception as e:
+        logger.error(f"❌ Errore send_notification_from_thread: {e}")
 
 
 def check_and_book(application):
@@ -750,6 +768,9 @@ def check_and_book(application):
         
         logger.info(f"📋 Trovate {len(bookings_to_make)} prenotazioni")
         
+        # Ottieni l'event loop del bot
+        loop = application.updater._application._loop
+        
         # Per ogni prenotazione da fare
         for booking in bookings_to_make:
             booking_id, user_id, class_name, class_date, class_time = booking
@@ -783,7 +804,7 @@ def check_and_book(application):
                 )
                 conn.commit()
                 
-                # Notifica utente - FIX: USA CREATE_TASK
+                # Notifica utente - FIX: USA run_coroutine_threadsafe
                 message = (
                     f"❌ PRENOTAZIONE NON POSSIBILE\n\n"
                     f"📚 {class_name}\n"
@@ -793,8 +814,11 @@ def check_and_book(application):
                     f"Potrebbe essere stata cancellata."
                 )
                 
-                application.create_task(
-                    send_notification_async(application, user_id, message)
+                send_notification_from_thread(
+                    application.bot,
+                    loop,
+                    user_id,
+                    message
                 )
                 
                 continue
@@ -810,7 +834,7 @@ def check_and_book(application):
                 )
                 conn.commit()
                 
-                # Notifica utente - FIX: USA CREATE_TASK
+                # Notifica utente - FIX: USA run_coroutine_threadsafe
                 if status == "completed":
                     message = (
                         f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
@@ -831,8 +855,11 @@ def check_and_book(application):
                         f"Controlla l'app EasyFit per aggiornamenti."
                     )
                 
-                application.create_task(
-                    send_notification_async(application, user_id, message)
+                send_notification_from_thread(
+                    application.bot,
+                    loop,
+                    user_id,
+                    message
                 )
                 
                 logger.info(f"🎉 Completata prenotazione #{booking_id}")
@@ -845,6 +872,23 @@ def check_and_book(application):
                     (booking_id,)
                 )
                 conn.commit()
+                
+                # Notifica fallimento
+                message = (
+                    f"❌ PRENOTAZIONE FALLITA\n\n"
+                    f"📚 {class_name}\n"
+                    f"📅 {class_date}\n"
+                    f"🕐 {class_time}\n\n"
+                    f"Si è verificato un errore durante la prenotazione.\n"
+                    f"Prova manualmente su app EasyFit."
+                )
+                
+                send_notification_from_thread(
+                    application.bot,
+                    loop,
+                    user_id,
+                    message
+                )
         
         cur.close()
         conn.close()
