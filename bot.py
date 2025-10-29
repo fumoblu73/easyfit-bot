@@ -198,7 +198,13 @@ def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
 def find_course_appointment_id(session, class_name, class_date, class_time):
     """Trova il courseAppointmentId cercando nel calendario"""
     try:
-        date_obj = datetime.strptime(class_date, '%Y-%m-%d')
+        # FIX: class_date può essere sia str che datetime.date
+        if isinstance(class_date, str):
+            date_obj = datetime.strptime(class_date, '%Y-%m-%d')
+        else:
+            # È già un datetime.date dal database
+            date_obj = class_date
+            
         start_date = date_obj.strftime('%Y-%m-%d')
         end_date = date_obj.strftime('%Y-%m-%d')
         
@@ -780,7 +786,14 @@ def send_telegram_notification(application, user_id, class_name, class_date, cla
     try:
         import asyncio
         
-        date_obj = datetime.strptime(class_date, '%Y-%m-%d')
+        # FIX: class_date può essere sia str che datetime.date
+        if isinstance(class_date, str):
+            date_obj = datetime.strptime(class_date, '%Y-%m-%d')
+        else:
+            # È già un datetime.date dal database
+            # Converti in datetime per poter usare strftime
+            date_obj = datetime.combine(class_date, datetime.min.time())
+            
         day_name = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'][date_obj.weekday()]
         
         if status == "completed":
