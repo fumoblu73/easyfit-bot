@@ -697,6 +697,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SCHEDULER - CONTROLLA E PRENOTA
 # =============================================================================
 
+async def send_notification_async(application, user_id, message):
+    """
+    FIX CRITICO: Invia notifica usando application.create_task()
+    invece di asyncio.run() che chiude l'event loop!
+    """
+    try:
+        await application.bot.send_message(
+            chat_id=user_id,
+            text=message
+        )
+    except Exception as e:
+        logger.error(f"❌ Errore invio notifica: {e}")
+
+
 def check_and_book(application):
     """Controlla se ci sono prenotazioni da fare"""
     
@@ -769,24 +783,19 @@ def check_and_book(application):
                 )
                 conn.commit()
                 
-                # Notifica utente
-                try:
-                    import asyncio
-                    asyncio.run(
-                        application.bot.send_message(
-                            chat_id=user_id,
-                            text=(
-                                f"❌ PRENOTAZIONE NON POSSIBILE\n\n"
-                                f"📚 {class_name}\n"
-                                f"📅 {class_date}\n"
-                                f"🕐 {class_time}\n\n"
-                                f"La lezione non è stata trovata nel calendario.\n"
-                                f"Potrebbe essere stata cancellata."
-                            )
-                        )
-                    )
-                except:
-                    pass
+                # Notifica utente - FIX: USA CREATE_TASK
+                message = (
+                    f"❌ PRENOTAZIONE NON POSSIBILE\n\n"
+                    f"📚 {class_name}\n"
+                    f"📅 {class_date}\n"
+                    f"🕐 {class_time}\n\n"
+                    f"La lezione non è stata trovata nel calendario.\n"
+                    f"Potrebbe essere stata cancellata."
+                )
+                
+                application.create_task(
+                    send_notification_async(application, user_id, message)
+                )
                 
                 continue
             
@@ -801,37 +810,30 @@ def check_and_book(application):
                 )
                 conn.commit()
                 
-                # Notifica utente
-                try:
-                    if status == "completed":
-                        message = (
-                            f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
-                            f"📚 {class_name}\n"
-                            f"📅 {class_date}\n"
-                            f"🕐 {class_time}\n\n"
-                            f"Ci vediamo in palestra! 💪"
-                        )
-                    elif status == "waitlisted":
-                        message = (
-                            f"⏳ IN LISTA D'ATTESA\n\n"
-                            f"📚 {class_name}\n"
-                            f"📅 {class_date}\n"
-                            f"🕐 {class_time}\n\n"
-                            f"⚠️ La lezione era piena!\n"
-                            f"Sei stato inserito in lista d'attesa.\n\n"
-                            f"🔔 Ti avviseremo se si libera un posto!\n"
-                            f"Controlla l'app EasyFit per aggiornamenti."
-                        )
-                    
-                    import asyncio
-                    asyncio.run(
-                        application.bot.send_message(
-                            chat_id=user_id,
-                            text=message
-                        )
+                # Notifica utente - FIX: USA CREATE_TASK
+                if status == "completed":
+                    message = (
+                        f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
+                        f"📚 {class_name}\n"
+                        f"📅 {class_date}\n"
+                        f"🕐 {class_time}\n\n"
+                        f"Ci vediamo in palestra! 💪"
                     )
-                except Exception as e:
-                    logger.error(f"❌ Errore invio notifica: {e}")
+                elif status == "waitlisted":
+                    message = (
+                        f"⏳ IN LISTA D'ATTESA\n\n"
+                        f"📚 {class_name}\n"
+                        f"📅 {class_date}\n"
+                        f"🕐 {class_time}\n\n"
+                        f"⚠️ La lezione era piena!\n"
+                        f"Sei stato inserito in lista d'attesa.\n\n"
+                        f"🔔 Ti avviseremo se si libera un posto!\n"
+                        f"Controlla l'app EasyFit per aggiornamenti."
+                    )
+                
+                application.create_task(
+                    send_notification_async(application, user_id, message)
+                )
                 
                 logger.info(f"🎉 Completata prenotazione #{booking_id}")
             else:
