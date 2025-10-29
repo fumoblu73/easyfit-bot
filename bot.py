@@ -82,15 +82,15 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Login e recupero calendario
     try:
-        token = login_easyfit()
-        if not token:
+        session = login_easyfit()
+        if not session:
             await update.message.reply_text(
                 "❌ Errore nel login a EasyFit.\n"
                 "Riprova tra qualche minuto."
             )
             return
         
-        calendar = get_calendar(token)
+        calendar = get_calendar(session)
         if not calendar:
             await update.message.reply_text(
                 "❌ Errore nel recuperare il calendario.\n"
@@ -104,22 +104,26 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Raggruppa per nome lezione
         classes = {}
-        for appointment in calendar:
-            class_name = appointment.get('courseName', 'Sconosciuto')
+        for course in calendar:
+            class_name = course.get('courseName', 'Sconosciuto')
             if class_name not in classes:
                 classes[class_name] = []
             
             # Parsing data
-            start_time = appointment.get('startTime')
+            start_time = course.get('startTime')
             if start_time:
-                lesson_date = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                # Parse diverso: formato ISO senza Z
+                try:
+                    lesson_date = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                except:
+                    continue
                 
                 # Solo lezioni future nei prossimi 7 giorni
                 if now < lesson_date < seven_days:
                     classes[class_name].append({
-                        'id': appointment.get('id'),
+                        'id': course.get('id'),
                         'date': lesson_date,
-                        'instructor': appointment.get('instructorName', 'N/A')
+                        'instructor': course.get('instructorName', 'N/A')
                     })
         
         # Crea bottoni per tipologie lezioni
@@ -151,6 +155,8 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"Errore in /prenota: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         await update.message.reply_text(
             "❌ Errore nel recuperare le lezioni.\n"
             "Riprova tra qualche minuto."
@@ -419,9 +425,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === FUNZIONI EASYFIT API ===
 
 def login_easyfit():
-    """Effettua login su EasyFit e ottiene token"""
+    """Effettua login su EasyFit e restituisce Session object con cookie"""
     try:
         import base64
+        
+        session = requests.Session()
         
         url = "https://app-easyfitpalestre.it/login"
         
@@ -450,23 +458,25 @@ def login_easyfit():
         }
         
         logger.info(f"🔐 Tentativo login...")
-        logger.info(f"   URL: {url}")
-        logger.info(f"   Username: {EASYFIT_EMAIL}")
         
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        response = session.post(url, json=payload, headers=headers, timeout=10)
         
         logger.info(f"📥 Response Status: {response.status_code}")
-        logger.info(f"📥 Response Body: {response.text}")
         
         if response.status_code == 200:
             data = response.json()
-            token = data.get('sessionId') or data.get('access_token')
-            if token:
+            session_id = data.get('sessionId')
+            
+            if session_id:
                 logger.info("✅ Login EasyFit OK")
-                logger.info(f"   Session ID: {token[:30]}...")
-                return token
+                logger.info(f"   Session ID: {session_id[:30]}...")
+                
+                # Salva sessionId come attributo
+                session.session_id = session_id
+                
+                return session
             else:
-                logger.error("❌ Token non trovato nella risposta")
+                logger.error("❌ SessionId non trovato")
                 return None
         else:
             logger.error(f"❌ Login fallito: {response.status_code}")
@@ -479,35 +489,47 @@ def login_easyfit():
         logger.error(traceback.format_exc())
         return None
 
-def get_calendar(token):
-    """Recupera calendario lezioni"""
+def get_calendar(session):
+    """Recupera calendario lezioni usando la sessione autenticata"""
     try:
-        url = "https://app-easyfitpalestre.it/nox/v1/calendar/mycalendar"
-        
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
+        url = "https://app-easyfitpalestre.it/nox/public/v2/bookableitems/courses/with-canceled"
         
         # Range di 7 giorni
         now = datetime.now()
-        start = now.strftime('%Y-%m-%dT00:00:00.000Z')
-        end = (now + timedelta(days=7)).strftime('%Y-%m-%dT23:59:59.999Z')
+        start = now.strftime('%Y-%m-%d')
+        end = (now + timedelta(days=7)).strftime('%Y-%m-%d')
         
         params = {
-            "from": start,
-            "to": end
+            "startDate": start,
+            "endDate": end,
+            "employeeIds": "",
+            "organizationUnitIds": "1216915380"
         }
         
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "it-IT,it;q=0.9",
+            "Origin": "https://app-easyfitpalestre.it",
+            "Referer": "https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
+            "x-tenant": "easyfit",
+            "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
+            "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
+            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
+        }
+        
+        logger.info(f"📅 Recupero calendario: {start} → {end}")
+        
+        response = session.get(url, params=params, headers=headers, timeout=15)
         
         if response.status_code == 200:
-            data = response.json()
-            appointments = data.get('courseAppointments', [])
-            logger.info(f"✅ Recuperate {len(appointments)} lezioni")
-            return appointments
+            courses = response.json()
+            logger.info(f"✅ Recuperate {len(courses)} lezioni")
+            return courses
         else:
             logger.error(f"❌ Errore calendario: {response.status_code}")
+            logger.error(f"   Response: {response.text[:200]}")
             return None
             
     except Exception as e:
@@ -518,13 +540,13 @@ def book_class_easyfit(class_id, class_name, class_date, class_time):
     """
     Prenota effettivamente la lezione su EasyFit
     
-    🔧 FIX APPLICATO: expectedCustomerStatus = "WAITING_LIST" (non "WAITLISTED")
+    🔧 Usa Session con cookie + WAITING_LIST per lista d'attesa
     """
     try:
         # 1. Login
         logger.info(f"🔐 Login EasyFit per prenotazione...")
-        token = login_easyfit()
-        if not token:
+        session = login_easyfit()
+        if not session:
             logger.error("❌ Login fallito")
             return False, None
         
@@ -532,8 +554,17 @@ def book_class_easyfit(class_id, class_name, class_date, class_time):
         url = "https://app-easyfitpalestre.it/nox/v1/calendar/bookcourse"
         
         headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "it-IT,it;q=0.9",
+            "Origin": "https://app-easyfitpalestre.it",
+            "Referer": "https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
+            "x-tenant": "easyfit",
+            "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
+            "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
+            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
         }
         
         # Primo tentativo: prenotazione normale
@@ -544,12 +575,10 @@ def book_class_easyfit(class_id, class_name, class_date, class_time):
         
         logger.info(f"📝 Tentativo prenotazione normale...")
         logger.info(f"   Lesson ID: {class_id}")
-        logger.info(f"   Payload: {payload}")
         
-        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        response = session.post(url, json=payload, headers=headers, timeout=10)
         
         logger.info(f"📥 Response status: {response.status_code}")
-        logger.info(f"📥 Response body: {response.text}")
         
         if response.status_code == 200:
             logger.info(f"✅ PRENOTAZIONE EFFETTUATA: {class_name} {class_date} {class_time}")
@@ -565,12 +594,10 @@ def book_class_easyfit(class_id, class_name, class_date, class_time):
         }
         
         logger.info(f"📝 Tentativo lista d'attesa...")
-        logger.info(f"   Payload: {payload_waitlist}")
         
-        response_waitlist = requests.post(url, headers=headers, json=payload_waitlist, timeout=10)
+        response_waitlist = session.post(url, json=payload_waitlist, headers=headers, timeout=10)
         
         logger.info(f"📥 Response status: {response_waitlist.status_code}")
-        logger.info(f"📥 Response body: {response_waitlist.text}")
         
         if response_waitlist.status_code == 200:
             logger.info(f"📋 IN LISTA D'ATTESA: {class_name} {class_date} {class_time}")
@@ -578,13 +605,15 @@ def book_class_easyfit(class_id, class_name, class_date, class_time):
         
         # Entrambi i tentativi falliti
         logger.error(f"❌ Prenotazione fallita completamente")
-        logger.error(f"   Normale: {response.status_code} - {response.text}")
-        logger.error(f"   Waitlist: {response_waitlist.status_code} - {response_waitlist.text}")
+        logger.error(f"   Normale: {response.status_code}")
+        logger.error(f"   Waitlist: {response_waitlist.status_code}")
         
         return False, None
         
     except Exception as e:
         logger.error(f"❌ Errore book_class_easyfit: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False, None
 
 # Funzione che controlla e prenota
