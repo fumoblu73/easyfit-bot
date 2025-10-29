@@ -155,14 +155,11 @@ def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "it-IT,it;q=0.9",
             "Origin": "https://app-easyfitpalestre.it",
             "Referer": "https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/course",
             "x-tenant": "easyfit",
             "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw",
-            "x-nox-client-type": "WEB",
-            "x-nox-web-context": "v=1",
-            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506"
+            "x-nox-client-type": "WEB"
         }
         
         # Tentativo 1: Prenotazione normale
@@ -490,10 +487,12 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏳ Attendi qualche secondo..."
         )
         
-        # IMPORTANTE: Fai NUOVO LOGIN per avere sessione fresca
-        # (la sessione precedente potrebbe essere scaduta)
-        logger.info("🔐 Nuovo login per prenotazione immediata...")
-        session = easyfit_login()
+        # RECUPERA SESSIONE
+        session = context.user_data.get('easyfit_session')
+        
+        if not session:
+            # Fai nuovo login se sessione scaduta
+            session = easyfit_login()
         
         if not session:
             await query.edit_message_text(
@@ -835,26 +834,34 @@ def check_and_book(application):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        now = datetime.now()
-        two_hours_ago = now - timedelta(hours=2)
+        # FIX TIMEZONE: usa UTC per confrontare con database
+        from datetime import timezone
+        now_utc = datetime.now(timezone.utc)
         
+        logger.info(f"⏰ Ora UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # RECUPERA TUTTE LE PRENOTAZIONI SCADUTE (non solo ultime 2 ore)
+        # Così se il bot era spento, recupera tutto l'arretrato
         cur.execute(
             """
-            SELECT id, user_id, class_name, class_date, class_time
+            SELECT id, user_id, class_name, class_date, class_time, booking_date
             FROM bookings
             WHERE status = 'pending'
-            AND booking_date BETWEEN %s AND %s
+            AND booking_date <= %s
+            ORDER BY booking_date ASC
             """,
-            (two_hours_ago, now)
+            (now_utc,)
         )
         
         bookings_to_make = cur.fetchall()
         
         if not bookings_to_make:
-            logger.info("ℹ️ Nessuna prenotazione")
+            logger.info("ℹ️ Nessuna prenotazione da processare")
             cur.close()
             conn.close()
             return
+        
+        logger.info(f"📋 Trovate {len(bookings_to_make)} prenotazioni da processare")
         
         # FASE 1: Login UNICO per tutte le prenotazioni
         if not _global_session:
@@ -868,11 +875,14 @@ def check_and_book(application):
         
         # FASE 2: Processa ogni prenotazione
         for booking in bookings_to_make:
-            booking_id, user_id, class_name, class_date, class_time = booking
+            booking_id, user_id, class_name, class_date, class_time, booking_date = booking
             
+            logger.info(f"")
             logger.info(f"📝 PRENOTAZIONE #{booking_id}")
             logger.info(f"   📚 {class_name}")
             logger.info(f"   📅 {class_date} ore {class_time}")
+            logger.info(f"   ⏰ Doveva prenotare: {booking_date}")
+            logger.info(f"   ⚠️  In ritardo di: {(now_utc - booking_date).total_seconds() / 60:.1f} minuti")
             
             # Trova courseAppointmentId
             course_appointment_id, slot = find_course_appointment_id(
@@ -952,6 +962,23 @@ def start_health_server():
         logger.error(f"❌ Errore health server: {e}")
 
 
+def keep_alive_ping():
+    """Fa un ping a se stesso ogni 10 minuti per evitare lo spin down"""
+    try:
+        port = int(os.environ.get('PORT', 10000))
+        url = f"http://localhost:{port}/"
+        
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            logger.info("💓 Keep-alive ping OK")
+        else:
+            logger.warning(f"⚠️ Keep-alive ping: status {response.status_code}")
+            
+    except Exception as e:
+        logger.error(f"❌ Errore keep-alive ping: {e}")
+
+
 def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
@@ -967,21 +994,34 @@ def main():
     application.add_handler(CallbackQueryHandler(cancel_booking, pattern="^cancel_"))
     
     scheduler = BackgroundScheduler()
+    
+    # Controllo prenotazioni ogni minuto (8-21)
     scheduler.add_job(
         lambda: check_and_book(application),
         'cron',
         hour='8-21',
-        minute='*/2'
+        minute='*'
     )
+    
+    # Keep-alive ping ogni 10 minuti (tutto il giorno)
+    # Evita che Render spenga il bot per inattività
+    scheduler.add_job(
+        keep_alive_ping,
+        'cron',
+        minute='*/10'
+    )
+    
     scheduler.start()
     
     start_health_server()
     
     logger.info("="*60)
     logger.info("🚀 BOT AVVIATO CON LEZIONI REALI DA EASYFIT!")
-    logger.info("⏰ Attivo dalle 8:00 alle 21:00 (controllo ogni 2 minuti)")
+    logger.info("⏰ Attivo dalle 8:00 alle 21:00 (controllo OGNI MINUTO)")
     logger.info("🎯 Calendario REALE da app-easyfitpalestre.it")
     logger.info("📋 Gestione automatica lista d'attesa")
+    logger.info("🔧 FIX: Timezone UTC + recupero arretrati")
+    logger.info("💓 Keep-alive: ping ogni 10 minuti (anti spin-down)")
     logger.info("="*60)
     
     application.run_polling(allowed_updates=Update.ALL_TYPES)
