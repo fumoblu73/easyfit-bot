@@ -701,7 +701,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def send_notification_from_thread(bot, user_id, message):
     """
     Invia notifica Telegram in modo sincrono dallo scheduler.
-    FIX: Usa nest_asyncio per permettere chiamate async nested.
+    FIX: Usa nest_asyncio e NON chiude il loop.
     """
     try:
         import nest_asyncio
@@ -711,14 +711,22 @@ def send_notification_from_thread(bot, user_id, message):
         async def send():
             await bot.send_message(chat_id=user_id, text=message)
         
-        # Crea nuovo loop temporaneo per questa operazione
-        new_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(new_loop)
+        # Ottieni o crea event loop
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         
         # Esegui la notifica
-        new_loop.run_until_complete(send())
+        loop.run_until_complete(send())
         
-        new_loop.close()
+        # NON chiudere il loop!
+        # loop.close()  ← RIMOSSO
+        
         logger.info(f"📲 Notifica inviata a {user_id}")
         
     except Exception as e:
