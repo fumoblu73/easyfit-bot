@@ -698,35 +698,33 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SCHEDULER - CONTROLLA E PRENOTA
 # =============================================================================
 
-async def send_notification_async(bot, user_id, message):
-    """
-    Funzione asincrona per inviare notifiche
-    """
-    try:
-        await bot.send_message(
-            chat_id=user_id,
-            text=message
-        )
-        logger.info(f"📲 Notifica inviata a {user_id}")
-    except Exception as e:
-        logger.error(f"❌ Errore invio notifica: {e}")
-
-
 def send_notification_from_thread(bot, loop, user_id, message):
     """
-    FIX DEFINITIVO: Usa asyncio.run_coroutine_threadsafe()
-    per chiamare coroutine asincrone da thread sincrono (scheduler)
+    Invia notifica Telegram in modo sincrono dallo scheduler.
+    FIX: Usa nest_asyncio per permettere chiamate async nested.
     """
     try:
-        # Schedula la coroutine nell'event loop del bot
-        future = asyncio.run_coroutine_threadsafe(
-            send_notification_async(bot, user_id, message),
-            loop
-        )
-        # Aspetta che completi (con timeout di 10 secondi)
-        future.result(timeout=10)
+        import nest_asyncio
+        nest_asyncio.apply()
+        
+        # Crea una coroutine per l'invio
+        async def send():
+            await bot.send_message(chat_id=user_id, text=message)
+        
+        # Crea nuovo loop temporaneo per questa operazione
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        
+        # Esegui la notifica
+        new_loop.run_until_complete(send())
+        
+        new_loop.close()
+        logger.info(f"📲 Notifica inviata a {user_id}")
+        
     except Exception as e:
-        logger.error(f"❌ Errore send_notification_from_thread: {e}")
+        logger.error(f"❌ Errore notifica: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 def check_and_book(application):
@@ -769,12 +767,7 @@ def check_and_book(application):
         logger.info(f"📋 Trovate {len(bookings_to_make)} prenotazioni")
         
         # Ottieni l'event loop del bot
-        # FIX: il path corretto dipende dalla versione di python-telegram-bot
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        loop = application.updater._application._loop
         
         # Per ogni prenotazione da fare
         for booking in bookings_to_make:
