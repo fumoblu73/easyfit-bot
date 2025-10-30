@@ -1023,7 +1023,14 @@ def keep_alive_ping():
 def main():
     """Avvia il bot"""
     
-    logger.info("🚀 Avvio EasyFit Bot...")
+    from datetime import timezone
+    startup_time = datetime.now(timezone.utc)
+    
+    logger.info("=" * 60)
+    logger.info("🚀 AVVIO EASYFIT BOT")
+    logger.info(f"⏰ Ora UTC: {startup_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"⏰ Ora ITA: {(startup_time + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 60)
     
     # Crea applicazione
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -1066,12 +1073,41 @@ def main():
     
     scheduler.start()
     
-    logger.info("✅ Bot pronto!")
-    logger.info("⏰ Attivo 8-21 per prenotazioni")
+    logger.info("=" * 60)
+    logger.info("✅ BOT PRONTO E OPERATIVO!")
+    logger.info("⏰ Attivo 8-21 UTC per prenotazioni")
     logger.info("💓 Keep-alive attivo 24/7")
+    logger.info("📱 Comandi disponibili su Telegram")
+    logger.info("=" * 60)
+    
+    # Handler per shutdown
+    import signal
+    import sys
+    
+    def shutdown_handler(signum, frame):
+        logger.warning("=" * 60)
+        logger.warning("⚠️ SHUTDOWN RICHIESTO")
+        logger.warning(f"Signal: {signum}")
+        from datetime import timezone
+        logger.warning(f"⏰ Ora UTC: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.warning("=" * 60)
+        scheduler.shutdown()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
     
     # Avvia bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except KeyboardInterrupt:
+        logger.warning("⚠️ Bot fermato da utente")
+    except Exception as e:
+        logger.error(f"❌ Errore critico: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    finally:
+        logger.warning("👋 Bot terminato")
 
 if __name__ == '__main__':
     main()
