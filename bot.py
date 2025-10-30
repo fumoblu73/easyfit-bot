@@ -103,6 +103,49 @@ def release_db_connection(conn):
 # EASYFIT API FUNCTIONS
 # =============================================================================
 
+def parse_course_datetime(date_string):
+    """
+    Parse datetime da calendario EasyFit
+    Gestisce vari formati possibili
+    """
+    from datetime import timezone
+    
+    if not date_string:
+        return None
+    
+    try:
+        # Caso 1: ISO con Z (UTC)
+        if date_string.endswith('Z'):
+            dt = datetime.fromisoformat(date_string.replace('Z', '+00:00'))
+            return dt
+        
+        # Caso 2: ISO con timezone (+01:00, +00:00, etc)
+        if '+' in date_string or date_string.count('-') > 2:
+            dt = datetime.fromisoformat(date_string)
+            return dt
+        
+        # Caso 3: ISO senza timezone (assume UTC)
+        if 'T' in date_string:
+            dt = datetime.fromisoformat(date_string)
+            # Se naive, aggiungi UTC
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        
+        # Caso 4: Solo data (YYYY-MM-DD)
+        if len(date_string) == 10:
+            dt = datetime.strptime(date_string, '%Y-%m-%d')
+            dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        
+        logger.warning(f"⚠️ Formato data non riconosciuto: {date_string}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ Errore parse data '{date_string}': {e}")
+        return None
+
+
 def easyfit_login():
     """Effettua login su EasyFit e restituisce session object"""
     try:
@@ -197,6 +240,13 @@ def get_calendar_courses(session, start_date, end_date):
         if response.status_code == 200:
             courses = response.json()
             logger.info(f"✅ Recuperate {len(courses)} lezioni")
+            
+            # DEBUG: Log formato RAW prime 3 lezioni
+            if courses:
+                logger.info("🔍 DEBUG - Prime 3 lezioni RAW:")
+                for i, course in enumerate(courses[:3]):
+                    logger.info(f"   #{i+1}: {course}")
+            
             return courses
         else:
             logger.error(f"❌ Errore calendario: {response.status_code}")
@@ -411,24 +461,33 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Filtra solo lezioni future (confronto timezone-aware)
+        # Filtra solo lezioni future (usando slots con timezone corretto)
+        from datetime import timezone
         now_utc = datetime.now(timezone.utc)
         future_courses = []
         
         logger.info(f"🔍 Filtro lezioni. Ora UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
         
         for course in courses:
-            start_time = course.get('start')
-            if start_time:
-                # Parse ISO con timezone
-                course_datetime = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+            course_has_future_slots = False
+            
+            # L'API restituisce un array 'slots' per ogni corso
+            for slot in course.get('slots', []):
+                start_datetime_str = slot.get('startDateTime', '')
                 
-                # Confronto timezone-aware
-                if course_datetime > now_utc:
-                    future_courses.append(course)
-                else:
-                    # Log lezioni filtrate per debug
-                    logger.debug(f"   ⏭️ Filtrata (passata): {course.get('name')} - {course_datetime.strftime('%Y-%m-%d %H:%M')}")
+                if start_datetime_str:
+                    # Rimuovi timezone [Europe/Rome] se presente
+                    start_datetime_str = start_datetime_str.split('[')[0]
+                    
+                    # Parse datetime
+                    slot_datetime = parse_course_datetime(start_datetime_str)
+                    
+                    if slot_datetime and slot_datetime > now_utc:
+                        course_has_future_slots = True
+                        break  # Basta uno slot futuro
+            
+            if course_has_future_slots:
+                future_courses.append(course)
         
         logger.info(f"✅ Lezioni future: {len(future_courses)}/{len(courses)}")
         
@@ -486,24 +545,26 @@ async def class_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     class_name = query.data.split('_', 1)[1]
     context.user_data['class_name'] = class_name
     
-    # Filtra lezioni per questo nome
+    # Filtra lezioni per questo nome e raggruppa per data
     all_courses = context.user_data.get('courses', [])
-    class_courses = [c for c in all_courses if c.get('name') == class_name]
     
-    # Raggruppa per data
     courses_by_date = {}
-    for course in class_courses:
-        start = course.get('start')
-        if start:
-            dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
-            date_key = dt.strftime('%Y-%m-%d')
-            
-            if date_key not in courses_by_date:
-                courses_by_date[date_key] = []
-            courses_by_date[date_key].append(course)
+    for course in all_courses:
+        if course.get('name') == class_name:
+            for slot in course.get('slots', []):
+                start_datetime_str = slot.get('startDateTime', '')
+                if start_datetime_str:
+                    # Rimuovi timezone [Europe/Rome]
+                    start_datetime_str = start_datetime_str.split('[')[0]
+                    date_key = start_datetime_str.split('T')[0]
+                    
+                    if date_key not in courses_by_date:
+                        courses_by_date[date_key] = []
+                    courses_by_date[date_key].append(slot)
     
     # Salva per dopo
     context.user_data['courses_by_date'] = courses_by_date
+    context.user_data['course_name'] = class_name
     
     # Crea bottoni per date
     keyboard = []
@@ -533,23 +594,24 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date_str = query.data.split('_')[1]
     context.user_data['date'] = date_str
     
-    # Filtra lezioni per questa data
+    # Filtra slot per questa data
     courses_by_date = context.user_data.get('courses_by_date', {})
-    date_courses = courses_by_date.get(date_str, [])
+    date_slots = courses_by_date.get(date_str, [])
     
     # Salva per dopo
-    context.user_data['date_courses'] = date_courses
+    context.user_data['date_slots'] = date_slots
     
     # Crea bottoni per orari
     keyboard = []
-    for course in date_courses:
-        start = course.get('start')
-        if start:
-            dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
-            time_str = dt.strftime('%H:%M')
+    for slot in date_slots:
+        start_datetime_str = slot.get('startDateTime', '')
+        if start_datetime_str:
+            # Rimuovi timezone
+            start_datetime_str = start_datetime_str.split('[')[0]
+            time_str = start_datetime_str.split('T')[1][:5]  # HH:MM
             
-            available = course.get('availableSlots', 0)
-            max_slots = course.get('maxSlots', 0)
+            available = slot.get('availableSlots', 0)
+            max_slots = slot.get('maxSlots', 0)
             
             if available > 0:
                 status = f"✅ {available}/{max_slots}"
@@ -563,9 +625,10 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     date_obj = datetime.strptime(date_str, '%Y-%m-%d')
     day_name = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'][date_obj.weekday()]
+    class_name = context.user_data.get('class_name', 'Lezione')
     
     await query.edit_message_text(
-        f"📚 {context.user_data['class_name']}\n"
+        f"📚 {class_name}\n"
         f"📅 {day_name} {date_obj.strftime('%d/%m/%Y')}\n\n"
         f"🕐 Che orario?",
         reply_markup=reply_markup
