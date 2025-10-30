@@ -769,7 +769,12 @@ def check_and_book(application):
         logger.info(f"📋 Trovate {len(bookings_to_make)} prenotazioni")
         
         # Ottieni l'event loop del bot
-        loop = application.updater._application._loop
+        # FIX: il path corretto dipende dalla versione di python-telegram-bot
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         
         # Per ogni prenotazione da fare
         for booking in bookings_to_make:
