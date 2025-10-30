@@ -27,9 +27,27 @@ EASYFIT_PASSWORD = os.getenv('EASYFIT_PASSWORD')
 EASYFIT_BASE_URL = "https://app-easyfitpalestre.it"
 ORGANIZATION_UNIT_ID = "1216915380"
 
-# Connessione database
-def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, sslmode='require')
+# Connessione database con retry
+def get_db_connection(max_retries=3):
+    """
+    Connessione database con retry automatico
+    Gestisce errori SSL intermittenti di Supabase
+    """
+    import time
+    
+    for attempt in range(max_retries):
+        try:
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            return conn
+        except psycopg2.OperationalError as e:
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 2  # 2s, 4s, 6s
+                logger.warning(f"⚠️ Errore DB (tentativo {attempt + 1}/{max_retries}): {str(e)[:100]}")
+                logger.info(f"⏳ Riprovo tra {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"❌ Connessione DB fallita dopo {max_retries} tentativi")
+                raise
 
 
 # =============================================================================
@@ -757,6 +775,7 @@ def check_and_book(application):
     logger.info(f"⏰ Ora UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:
+        # Connessione con retry
         conn = get_db_connection()
         cur = conn.cursor()
         
@@ -802,125 +821,158 @@ def check_and_book(application):
             if delay > 5:
                 logger.warning(f"   ⚠️ In ritardo di {int(delay)} minuti")
             
-            # TROVA ID LEZIONE
-            course_appointment_id = find_course_id(session, class_name, str(class_date), class_time)
-            
-            if not course_appointment_id:
-                # Segna come completata (non trovata)
-                cur.execute(
-                    "UPDATE bookings SET status = 'completed' WHERE id = %s",
-                    (booking_id,)
-                )
-                conn.commit()
+            try:
+                # TROVA ID LEZIONE
+                course_appointment_id = find_course_id(session, class_name, str(class_date), class_time)
                 
-                # Notifica utente - FIX: USA run_coroutine_threadsafe
-                message = (
-                    f"❌ PRENOTAZIONE NON POSSIBILE\n\n"
-                    f"📚 {class_name}\n"
-                    f"📅 {class_date}\n"
-                    f"🕐 {class_time}\n\n"
-                    f"La lezione non è stata trovata nel calendario.\n"
-                    f"Potrebbe essere stata cancellata."
-                )
-                
-                send_notification_from_thread(
-                    application.bot,
-                    user_id,
-                    message
-                )
-                
-                continue
-            
-            # PRENOTA
-            success, status, response = book_course_easyfit(session, course_appointment_id)
-            
-            if success:
-                # Aggiorna status nel database
-                cur.execute(
-                    "UPDATE bookings SET status = %s WHERE id = %s",
-                    (status, booking_id)
-                )
-                conn.commit()
-                
-                # Notifica utente - FIX: USA run_coroutine_threadsafe
-                if status == "completed":
+                if not course_appointment_id:
+                    # Segna come completata (non trovata)
+                    cur.execute(
+                        "UPDATE bookings SET status = 'completed' WHERE id = %s",
+                        (booking_id,)
+                    )
+                    conn.commit()
+                    
+                    # Notifica utente
                     message = (
-                        f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
+                        f"❌ PRENOTAZIONE NON POSSIBILE\n\n"
                         f"📚 {class_name}\n"
                         f"📅 {class_date}\n"
                         f"🕐 {class_time}\n\n"
-                        f"Ci vediamo in palestra! 💪"
+                        f"La lezione non è stata trovata nel calendario.\n"
+                        f"Potrebbe essere stata cancellata."
                     )
-                elif status == "waitlisted":
-                    message = (
-                        f"⏳ IN LISTA D'ATTESA\n\n"
-                        f"📚 {class_name}\n"
-                        f"📅 {class_date}\n"
-                        f"🕐 {class_time}\n\n"
-                        f"⚠️ La lezione era piena!\n"
-                        f"Sei stato inserito in lista d'attesa.\n\n"
-                        f"🔔 Ti avviseremo se si libera un posto!\n"
-                        f"Controlla l'app EasyFit per aggiornamenti."
+                    
+                    send_notification_from_thread(
+                        application.bot,
+                        user_id,
+                        message
                     )
+                    
+                    continue
                 
-                send_notification_from_thread(
-                    application.bot,
-                    user_id,
-                    message
-                )
+                # PRENOTA
+                success, status, response = book_course_easyfit(session, course_appointment_id)
                 
-                logger.info(f"🎉 Completata prenotazione #{booking_id}")
-            else:
-                # Prenotazione fallita
-                logger.error(f"❌ Prenotazione #{booking_id} fallita - Status: {status}")
-                
-                # Segna come completata comunque
-                cur.execute(
-                    "UPDATE bookings SET status = 'completed' WHERE id = %s",
-                    (booking_id,)
-                )
-                conn.commit()
-                
-                # Notifica diversa in base al tipo di fallimento
-                if status == "waitlist_unavailable":
-                    message = (
-                        f"❌ LEZIONE PIENA\n\n"
-                        f"📚 {class_name}\n"
-                        f"📅 {class_date}\n"
-                        f"🕐 {class_time}\n\n"
-                        f"⚠️ La lezione è piena e non ha lista d'attesa disponibile.\n\n"
-                        f"💡 Prova:\n"
-                        f"• Prenotare un altro orario\n"
-                        f"• Controllare manualmente sull'app se si liberano posti"
+                if success:
+                    # Aggiorna status nel database
+                    cur.execute(
+                        "UPDATE bookings SET status = %s WHERE id = %s",
+                        (status, booking_id)
                     )
-                elif status == "full":
-                    message = (
-                        f"❌ LEZIONE PIENA\n\n"
-                        f"📚 {class_name}\n"
-                        f"📅 {class_date}\n"
-                        f"🕐 {class_time}\n\n"
-                        f"⚠️ La lezione è completamente piena.\n"
-                        f"Anche la lista d'attesa non è disponibile.\n\n"
-                        f"💡 Scegli un altro giorno/orario."
+                    conn.commit()
+                    
+                    # Notifica utente
+                    if status == "completed":
+                        message = (
+                            f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
+                            f"📚 {class_name}\n"
+                            f"📅 {class_date}\n"
+                            f"🕐 {class_time}\n\n"
+                            f"Ci vediamo in palestra! 💪"
+                        )
+                    elif status == "waitlisted":
+                        message = (
+                            f"⏳ IN LISTA D'ATTESA\n\n"
+                            f"📚 {class_name}\n"
+                            f"📅 {class_date}\n"
+                            f"🕐 {class_time}\n\n"
+                            f"⚠️ La lezione era piena!\n"
+                            f"Sei stato inserito in lista d'attesa.\n\n"
+                            f"🔔 Ti avviseremo se si libera un posto!\n"
+                            f"Controlla l'app EasyFit per aggiornamenti."
+                        )
+                    
+                    send_notification_from_thread(
+                        application.bot,
+                        user_id,
+                        message
                     )
+                    
+                    logger.info(f"🎉 Completata prenotazione #{booking_id}")
                 else:
+                    # Prenotazione fallita
+                    logger.error(f"❌ Prenotazione #{booking_id} fallita - Status: {status}")
+                    
+                    # Segna come completata comunque
+                    cur.execute(
+                        "UPDATE bookings SET status = 'completed' WHERE id = %s",
+                        (booking_id,)
+                    )
+                    conn.commit()
+                    
+                    # Notifica diversa in base al tipo di fallimento
+                    if status == "waitlist_unavailable":
+                        message = (
+                            f"❌ LEZIONE PIENA\n\n"
+                            f"📚 {class_name}\n"
+                            f"📅 {class_date}\n"
+                            f"🕐 {class_time}\n\n"
+                            f"⚠️ La lezione è piena e non ha lista d'attesa disponibile.\n\n"
+                            f"💡 Prova:\n"
+                            f"• Prenotare un altro orario\n"
+                            f"• Controllare manualmente sull'app se si liberano posti"
+                        )
+                    elif status == "full":
+                        message = (
+                            f"❌ LEZIONE PIENA\n\n"
+                            f"📚 {class_name}\n"
+                            f"📅 {class_date}\n"
+                            f"🕐 {class_time}\n\n"
+                            f"⚠️ La lezione è completamente piena.\n"
+                            f"Anche la lista d'attesa non è disponibile.\n\n"
+                            f"💡 Scegli un altro giorno/orario."
+                        )
+                    else:
+                        message = (
+                            f"❌ PRENOTAZIONE FALLITA\n\n"
+                            f"📚 {class_name}\n"
+                            f"📅 {class_date}\n"
+                            f"🕐 {class_time}\n\n"
+                            f"Si è verificato un errore durante la prenotazione.\n"
+                            f"Prova manualmente su app EasyFit."
+                        )
+                    
+                    send_notification_from_thread(
+                        application.bot,
+                        user_id,
+                        message
+                    )
+            
+            except Exception as booking_error:
+                # Errore specifico per questa prenotazione
+                logger.error(f"❌ Errore processamento prenotazione #{booking_id}: {booking_error}")
+                
+                # Notifica utente dell'errore
+                try:
                     message = (
-                        f"❌ PRENOTAZIONE FALLITA\n\n"
+                        f"⚠️ ERRORE TECNICO\n\n"
                         f"📚 {class_name}\n"
                         f"📅 {class_date}\n"
                         f"🕐 {class_time}\n\n"
-                        f"Si è verificato un errore durante la prenotazione.\n"
-                        f"Prova manualmente su app EasyFit."
+                        f"Si è verificato un errore tecnico.\n"
+                        f"Riproverò al prossimo controllo.\n\n"
+                        f"Se il problema persiste, prenota manualmente."
                     )
+                    
+                    send_notification_from_thread(
+                        application.bot,
+                        user_id,
+                        message
+                    )
+                except:
+                    pass
                 
-                send_notification_from_thread(
-                    application.bot,
-                    user_id,
-                    message
-                )
+                # Continua con le altre prenotazioni
+                continue
         
         cur.close()
         conn.close()
+        
+    except psycopg2.OperationalError as db_error:
+        # Errore connessione database - non bloccare lo scheduler
+        logger.error(f"❌ Errore connessione DB: {db_error}")
+        logger.info("⏭️ Salto questo controllo, riproverò al prossimo minuto")
         
     except Exception as e:
         logger.error(f"❌ Errore check_and_book: {e}")
