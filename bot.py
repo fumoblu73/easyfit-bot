@@ -27,27 +27,76 @@ EASYFIT_PASSWORD = os.getenv('EASYFIT_PASSWORD')
 EASYFIT_BASE_URL = "https://app-easyfitpalestre.it"
 ORGANIZATION_UNIT_ID = "1216915380"
 
-# Connessione database con retry
+# Connection pool per gestire meglio le connessioni Supabase
+import psycopg2.pool
+from threading import Lock
+
+# Pool globale di connessioni
+db_pool = None
+pool_lock = Lock()
+
+def init_db_pool():
+    """Inizializza il connection pool"""
+    global db_pool
+    with pool_lock:
+        if db_pool is None:
+            try:
+                db_pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1,
+                    maxconn=5,
+                    dsn=DATABASE_URL,
+                    sslmode='require',
+                    connect_timeout=10
+                )
+                logger.info("💾 Connection pool inizializzato")
+            except Exception as e:
+                logger.error(f"❌ Errore init pool: {e}")
+                db_pool = None
+
 def get_db_connection(max_retries=3):
     """
-    Connessione database con retry automatico
+    Ottiene connessione dal pool con retry automatico
     Gestisce errori SSL intermittenti di Supabase
     """
     import time
     
+    # Inizializza pool se necessario
+    if db_pool is None:
+        init_db_pool()
+    
     for attempt in range(max_retries):
         try:
-            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            conn = db_pool.getconn()
+            # Testa la connessione
+            cur = conn.cursor()
+            cur.execute('SELECT 1')
+            cur.close()
             return conn
-        except psycopg2.OperationalError as e:
+        except Exception as e:
             if attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 2  # 2s, 4s, 6s
+                wait_time = (attempt + 1) * 2
                 logger.warning(f"⚠️ Errore DB (tentativo {attempt + 1}/{max_retries}): {str(e)[:100]}")
                 logger.info(f"⏳ Riprovo tra {wait_time}s...")
+                
+                # Rilascia connessione corrotta se esiste
+                try:
+                    if 'conn' in locals():
+                        db_pool.putconn(conn, close=True)
+                except:
+                    pass
+                
                 time.sleep(wait_time)
             else:
                 logger.error(f"❌ Connessione DB fallita dopo {max_retries} tentativi")
                 raise
+
+def release_db_connection(conn):
+    """Rilascia connessione al pool"""
+    try:
+        if db_pool and conn:
+            db_pool.putconn(conn)
+    except Exception as e:
+        logger.warning(f"⚠️ Errore rilascio connessione: {e}")
 
 
 # =============================================================================
@@ -346,8 +395,9 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Range: oggi + 7 giorni
-        today = datetime.now()
+        # Range: oggi + 7 giorni (UTC)
+        from datetime import timezone
+        today = datetime.now(timezone.utc)
         start_date = today.strftime('%Y-%m-%d')
         end_date = (today + timedelta(days=7)).strftime('%Y-%m-%d')
         
@@ -361,24 +411,35 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Filtra solo lezioni future
-        now = datetime.now()
+        # Filtra solo lezioni future (confronto timezone-aware)
+        now_utc = datetime.now(timezone.utc)
         future_courses = []
+        
+        logger.info(f"🔍 Filtro lezioni. Ora UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
         
         for course in courses:
             start_time = course.get('start')
             if start_time:
+                # Parse ISO con timezone
                 course_datetime = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                # Converti a naive per confronto
-                course_datetime_naive = course_datetime.replace(tzinfo=None)
                 
-                if course_datetime_naive > now:
+                # Confronto timezone-aware
+                if course_datetime > now_utc:
                     future_courses.append(course)
+                else:
+                    # Log lezioni filtrate per debug
+                    logger.debug(f"   ⏭️ Filtrata (passata): {course.get('name')} - {course_datetime.strftime('%Y-%m-%d %H:%M')}")
+        
+        logger.info(f"✅ Lezioni future: {len(future_courses)}/{len(courses)}")
         
         if not future_courses:
+            now_ita = now_utc + timedelta(hours=1)  # UTC+1 per ora italiana
             await update.message.reply_text(
-                "❌ Nessuna lezione futura disponibile.\n"
-                "Tutte le lezioni sono già passate."
+                f"❌ Nessuna lezione futura disponibile.\n\n"
+                f"⏰ Ora attuale: {now_ita.strftime('%d/%m/%Y %H:%M')} (ora italiana)\n\n"
+                f"📅 Ho controllato {len(courses)} lezioni nei prossimi 7 giorni,\n"
+                f"ma sono tutte già passate o in corso.\n\n"
+                f"💡 Riprova tra qualche ora!"
             )
             return
         
@@ -555,7 +616,7 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         booking_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
-        conn.close()
+        release_db_connection(conn)
         
         date_obj = datetime.strptime(context.user_data['date'], '%Y-%m-%d')
         day_name = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'][date_obj.weekday()]
@@ -599,7 +660,7 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         bookings = cur.fetchall()
         cur.close()
-        conn.close()
+        release_db_connection(conn)
         
         if not bookings:
             await update.message.reply_text(
@@ -700,7 +761,7 @@ async def cancella(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not result:
             await update.message.reply_text(f"❌ Prenotazione #{booking_id} non trovata.")
             cur.close()
-            conn.close()
+            release_db_connection(conn)
             return
         
         class_name, class_date, class_time = result
@@ -712,7 +773,7 @@ async def cancella(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         conn.commit()
         cur.close()
-        conn.close()
+        release_db_connection(conn)
         
         await update.message.reply_text(
             f"✅ PRENOTAZIONE CANCELLATA\n\n"
@@ -796,8 +857,7 @@ def check_and_book(application):
         logger.info(f"📋 Trovate {len(bookings_to_make)} prenotazioni da processare")
         
         if not bookings_to_make:
-            cur.close()
-            conn.close()
+            release_db_connection(conn)
             return
         
         # LOGIN UNA VOLTA SOLA
@@ -805,7 +865,7 @@ def check_and_book(application):
         if not session:
             logger.error("❌ Login fallito - salto controllo")
             cur.close()
-            conn.close()
+            release_db_connection(conn)
             return
         
         # Processa ogni prenotazione
@@ -967,7 +1027,7 @@ def check_and_book(application):
                 continue
         
         cur.close()
-        conn.close()
+        release_db_connection(conn)
         
     except psycopg2.OperationalError as db_error:
         # Errore connessione database - non bloccare lo scheduler
@@ -1031,6 +1091,9 @@ def main():
     logger.info(f"⏰ Ora UTC: {startup_time.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"⏰ Ora ITA: {(startup_time + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
+    
+    # Inizializza connection pool
+    init_db_pool()
     
     # Crea applicazione
     application = Application.builder().token(TELEGRAM_TOKEN).build()
