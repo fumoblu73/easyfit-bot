@@ -185,10 +185,15 @@ def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
             if response.status_code == 200:
                 logger.info(f"📋 LISTA D'ATTESA!")
                 return True, "waitlisted", response.json()
+            else:
+                # Lista d'attesa non disponibile o piena
+                logger.warning(f"⚠️ Lista d'attesa non disponibile: {response.status_code}")
+                logger.warning(f"   Response: {response.text[:200]}")
+                return False, "waitlist_unavailable", None
         
         logger.error(f"❌ Prenotazione fallita: {response.status_code}")
         logger.error(f"   Response: {response.text[:200]}")
-        return False, "failed", None
+        return False, "full", None
             
     except Exception as e:
         logger.error(f"❌ Errore book_course_easyfit: {e}")
@@ -865,7 +870,8 @@ def check_and_book(application):
                 
                 logger.info(f"🎉 Completata prenotazione #{booking_id}")
             else:
-                logger.error(f"❌ Prenotazione #{booking_id} fallita")
+                # Prenotazione fallita
+                logger.error(f"❌ Prenotazione #{booking_id} fallita - Status: {status}")
                 
                 # Segna come completata comunque
                 cur.execute(
@@ -874,15 +880,37 @@ def check_and_book(application):
                 )
                 conn.commit()
                 
-                # Notifica fallimento
-                message = (
-                    f"❌ PRENOTAZIONE FALLITA\n\n"
-                    f"📚 {class_name}\n"
-                    f"📅 {class_date}\n"
-                    f"🕐 {class_time}\n\n"
-                    f"Si è verificato un errore durante la prenotazione.\n"
-                    f"Prova manualmente su app EasyFit."
-                )
+                # Notifica diversa in base al tipo di fallimento
+                if status == "waitlist_unavailable":
+                    message = (
+                        f"❌ LEZIONE PIENA\n\n"
+                        f"📚 {class_name}\n"
+                        f"📅 {class_date}\n"
+                        f"🕐 {class_time}\n\n"
+                        f"⚠️ La lezione è piena e non ha lista d'attesa disponibile.\n\n"
+                        f"💡 Prova:\n"
+                        f"• Prenotare un altro orario\n"
+                        f"• Controllare manualmente sull'app se si liberano posti"
+                    )
+                elif status == "full":
+                    message = (
+                        f"❌ LEZIONE PIENA\n\n"
+                        f"📚 {class_name}\n"
+                        f"📅 {class_date}\n"
+                        f"🕐 {class_time}\n\n"
+                        f"⚠️ La lezione è completamente piena.\n"
+                        f"Anche la lista d'attesa non è disponibile.\n\n"
+                        f"💡 Scegli un altro giorno/orario."
+                    )
+                else:
+                    message = (
+                        f"❌ PRENOTAZIONE FALLITA\n\n"
+                        f"📚 {class_name}\n"
+                        f"📅 {class_date}\n"
+                        f"🕐 {class_time}\n\n"
+                        f"Si è verificato un errore durante la prenotazione.\n"
+                        f"Prova manualmente su app EasyFit."
+                    )
                 
                 send_notification_from_thread(
                     application.bot,
