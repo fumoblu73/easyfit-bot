@@ -178,17 +178,37 @@ def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
         if try_waitlist:
             logger.info(f"⏳ Tentativo lista d'attesa...")
             
-            payload["expectedCustomerStatus"] = "WAITLISTED"
+            # STEP 1: Valida (come fa il browser)
+            validate_url = f"{EASYFIT_BASE_URL}/v1/me/masterdata/validate/bookcourse"
+            validate_payload = {
+                "courseAppointmentId": course_appointment_id,
+                "expectedCustomerStatus": "WAITING_LIST"
+            }
             
-            response = session.post(url, json=payload, headers=headers, timeout=10)
+            validate_response = session.post(validate_url, json=validate_payload, headers=headers, timeout=10)
             
-            if response.status_code == 200:
-                logger.info(f"📋 LISTA D'ATTESA!")
-                return True, "waitlisted", response.json()
+            if validate_response.status_code == 200:
+                logger.info(f"✅ Validazione lista d'attesa OK")
+                
+                # STEP 2: Effettua prenotazione lista d'attesa (endpoint originale)
+                waitlist_payload = {
+                    "courseAppointmentId": course_appointment_id,
+                    "expectedCustomerStatus": "WAITING_LIST"
+                }
+                
+                response = session.post(url, json=waitlist_payload, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    logger.info(f"📋 LISTA D'ATTESA!")
+                    return True, "waitlisted", response.json()
+                else:
+                    logger.warning(f"⚠️ Prenotazione lista d'attesa fallita: {response.status_code}")
+                    logger.warning(f"   Response: {response.text[:200]}")
+                    return False, "waitlist_unavailable", None
             else:
-                # Lista d'attesa non disponibile o piena
-                logger.warning(f"⚠️ Lista d'attesa non disponibile: {response.status_code}")
-                logger.warning(f"   Response: {response.text[:200]}")
+                # Validazione fallita
+                logger.warning(f"⚠️ Validazione lista d'attesa fallita: {validate_response.status_code}")
+                logger.warning(f"   Response: {validate_response.text[:200]}")
                 return False, "waitlist_unavailable", None
         
         logger.error(f"❌ Prenotazione fallita: {response.status_code}")
