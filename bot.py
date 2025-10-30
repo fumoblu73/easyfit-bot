@@ -29,7 +29,7 @@ ORGANIZATION_UNIT_ID = "1216915380"
 
 # Connessione database
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
 
 
 # =============================================================================
