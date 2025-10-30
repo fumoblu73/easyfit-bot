@@ -698,7 +698,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SCHEDULER - CONTROLLA E PRENOTA
 # =============================================================================
 
-def send_notification_from_thread(bot, loop, user_id, message):
+def send_notification_from_thread(bot, user_id, message):
     """
     Invia notifica Telegram in modo sincrono dallo scheduler.
     FIX: Usa nest_asyncio per permettere chiamate async nested.
@@ -766,9 +766,6 @@ def check_and_book(application):
         
         logger.info(f"📋 Trovate {len(bookings_to_make)} prenotazioni")
         
-        # Ottieni l'event loop del bot
-        loop = application.updater._application._loop
-        
         # Per ogni prenotazione da fare
         for booking in bookings_to_make:
             booking_id, user_id, class_name, class_date, class_time = booking
@@ -814,7 +811,6 @@ def check_and_book(application):
                 
                 send_notification_from_thread(
                     application.bot,
-                    loop,
                     user_id,
                     message
                 )
@@ -855,7 +851,6 @@ def check_and_book(application):
                 
                 send_notification_from_thread(
                     application.bot,
-                    loop,
                     user_id,
                     message
                 )
@@ -883,7 +878,6 @@ def check_and_book(application):
                 
                 send_notification_from_thread(
                     application.bot,
-                    loop,
                     user_id,
                     message
                 )
