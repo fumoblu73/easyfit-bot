@@ -9,7 +9,6 @@ import requests
 import threading
 import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import time
 
 # Configurazione logging
 logging.basicConfig(
@@ -242,6 +241,12 @@ def get_calendar_courses(session, start_date, end_date):
             courses = response.json()
             logger.info(f"✅ Recuperate {len(courses)} lezioni")
             
+            # DEBUG: Log formato RAW prime 3 lezioni
+            if courses:
+                logger.info("🔍 DEBUG - Prime 3 lezioni RAW:")
+                for i, course in enumerate(courses[:3]):
+                    logger.info(f"   #{i+1}: {course}")
+            
             return courses
         else:
             logger.error(f"❌ Errore calendario: {response.status_code}")
@@ -335,10 +340,7 @@ def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
 
 
 def find_course_id(session, class_name, class_date, class_time):
-    """
-    Trova il courseAppointmentId per una lezione specifica
-    MODIFICATO: Cerca dentro gli slots, non in 'start' che non esiste
-    """
+    """Trova il courseAppointmentId per una lezione specifica"""
     try:
         logger.info(f"🔎 Cerco: {class_name} {class_date} {class_time}")
         
@@ -357,40 +359,20 @@ def find_course_id(session, class_name, class_date, class_time):
         # Cerca lezione matching
         for course in courses:
             course_name = course.get('name', '')
-            course_id = course.get('id')  # ID del corso base
+            course_start = course.get('start', '')
             
-            # L'API restituisce gli orari dentro 'slots'
-            slots = course.get('slots', [])
-            
-            for slot in slots:
-                start_datetime_str = slot.get('startDateTime', '')
-                
-                if not start_datetime_str:
-                    continue
-                
-                # Rimuovi timezone [Europe/Rome] se presente
-                start_datetime_str = start_datetime_str.split('[')[0]
-                
-                # Parse datetime
-                slot_datetime = parse_course_datetime(start_datetime_str)
-                
-                if not slot_datetime:
-                    continue
-                
-                # Estrai ora locale (già in +01:00)
-                slot_time_str = slot_datetime.strftime('%H:%M')
+            # Parse time da ISO
+            if course_start:
+                course_datetime = datetime.fromisoformat(course_start.replace('Z', '+00:00'))
+                course_time_str = course_datetime.strftime('%H:%M')
                 
                 # Match nome E orario
-                name_match = class_name.lower() in course_name.lower()
-                time_match = slot_time_str == class_time
-                
-                if name_match and time_match:
-                    logger.info(f"✅ Trovato corso!")
-                    logger.info(f"   ID: {course_id}")
+                if class_name.lower() in course_name.lower() and course_time_str == class_time:
+                    course_id = course.get('courseAppointmentId')
+                    logger.info(f"✅ Trovato ID: {course_id}")
                     logger.info(f"   Nome: {course_name}")
-                    logger.info(f"   Orario: {slot_time_str}")
-                    logger.info(f"   Prenotabile: {slot.get('bookable', 'N/A')}")
-                    logger.info(f"   Già prenotato: {slot.get('alreadyBooked', 'N/A')}")
+                    logger.info(f"   Orario: {course_time_str}")
+                    logger.info(f"   Posti: {course.get('availableSlots', 'N/A')}/{course.get('maxSlots', 'N/A')}")
                     return course_id
         
         logger.warning(f"❌ Lezione non trovata: {class_name} {class_date} {class_time}")
@@ -398,8 +380,6 @@ def find_course_id(session, class_name, class_date, class_time):
         
     except Exception as e:
         logger.error(f"❌ Errore find_course_id: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
         return None
 
 
@@ -407,43 +387,20 @@ def find_course_id(session, class_name, class_date, class_time):
 # TELEGRAM BOT FUNCTIONS
 # =============================================================================
 
-def send_notification_sync(bot, user_id, message):
+def send_notification_from_thread(application, user_id, message):
     """
-    Invia notifica Telegram in modo sincrono da scheduler
-    Usa un thread separato per evitare interferenze con il loop principale
+    Invia notifica Telegram da thread scheduler
+    FIXED: Usa il loop dell'applicazione principale
     """
-    import threading
-    
-    result = {'success': False, 'error': None}
-    
-    def run_in_thread():
-        """Esegue la notifica in un thread con loop dedicato"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        async def send():
-            await bot.send_message(chat_id=user_id, text=message)
-        
-        try:
-            loop.run_until_complete(send())
-            result['success'] = True
-            logger.info(f"📲 Notifica inviata a {user_id}")
-        except Exception as e:
-            result['error'] = e
-            logger.error(f"❌ Errore send_message: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-        finally:
-            loop.close()
-    
     try:
-        # Esegui in thread separato
-        thread = threading.Thread(target=run_in_thread, daemon=True)
-        thread.start()
-        thread.join(timeout=10)
+        async def send():
+            await application.bot.send_message(chat_id=user_id, text=message)
         
-        if not result['success'] and result['error']:
-            raise result['error']
+        # Usa il loop dell'applicazione principale
+        loop = application.updater._loop
+        future = asyncio.run_coroutine_threadsafe(send(), loop)
+        future.result(timeout=10)
+        logger.info(f"📲 Notifica inviata a {user_id}")
     except Exception as e:
         logger.error(f"❌ Errore invio notifica: {e}")
 
@@ -1005,8 +962,8 @@ def check_and_book(application):
                         f"Potrebbe essere stata cancellata."
                     )
                     
-                    send_notification_sync(
-                        application.bot,
+                    send_notification_from_thread(
+                        application,
                         user_id,
                         message
                     )
@@ -1045,8 +1002,8 @@ def check_and_book(application):
                             f"Controlla l'app EasyFit per aggiornamenti."
                         )
                     
-                    send_notification_sync(
-                        application.bot,
+                    send_notification_from_thread(
+                        application,
                         user_id,
                         message
                     )
@@ -1095,8 +1052,8 @@ def check_and_book(application):
                             f"Prova manualmente su app EasyFit."
                         )
                     
-                    send_notification_sync(
-                        application.bot,
+                    send_notification_from_thread(
+                        application,
                         user_id,
                         message
                     )
@@ -1117,8 +1074,8 @@ def check_and_book(application):
                         f"Se il problema persiste, prenota manualmente."
                     )
                     
-                    send_notification_sync(
-                        application.bot,
+                    send_notification_from_thread(
+                        application,
                         user_id,
                         message
                     )
@@ -1179,17 +1136,17 @@ def keep_alive_ping():
 
 
 # =============================================================================
-# MAIN CON AUTO-RESTART
+# MAIN
 # =============================================================================
 
 def main():
-    """Avvia il bot con sistema di auto-restart"""
+    """Avvia il bot"""
     
     from datetime import timezone
     startup_time = datetime.now(timezone.utc)
     
     logger.info("=" * 60)
-    logger.info("🚀 AVVIO EASYFIT BOT v2.1 FINAL")
+    logger.info("🚀 AVVIO EASYFIT BOT")
     logger.info(f"⏰ Ora UTC: {startup_time.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"⏰ Ora ITA: {(startup_time + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
@@ -1242,7 +1199,6 @@ def main():
     logger.info("✅ BOT PRONTO E OPERATIVO!")
     logger.info("⏰ Attivo 8-21 UTC per prenotazioni")
     logger.info("💓 Keep-alive attivo 24/7")
-    logger.info("🔄 Sistema auto-restart abilitato")
     logger.info("📱 Comandi disponibili su Telegram")
     logger.info("=" * 60)
     
@@ -1263,37 +1219,17 @@ def main():
     signal.signal(signal.SIGTERM, shutdown_handler)
     signal.signal(signal.SIGINT, shutdown_handler)
     
-    # =========================================================================
-    # LOOP CON AUTO-RESTART
-    # =========================================================================
-    max_retries = 5
-    retry_count = 0
-    
-    while retry_count < max_retries:
-        try:
-            logger.info(f"🚀 Avvio polling (tentativo {retry_count + 1}/{max_retries})...")
-            application.run_polling(allowed_updates=Update.ALL_TYPES)
-            break  # Uscita pulita
-            
-        except KeyboardInterrupt:
-            logger.warning("⚠️ Bot fermato da utente")
-            break
-            
-        except Exception as e:
-            retry_count += 1
-            logger.error(f"❌ Errore critico (tentativo {retry_count}/{max_retries}): {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
-            if retry_count < max_retries:
-                wait_time = min(60 * retry_count, 300)  # Max 5 minuti
-                logger.warning(f"⏳ Riavvio tra {wait_time} secondi...")
-                time.sleep(wait_time)
-                logger.info("🔄 Riavvio bot...")
-            else:
-                logger.error("❌ Troppi errori consecutivi, termino.")
-    
-    logger.warning("👋 Bot terminato")
+    # Avvia bot
+    try:
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except KeyboardInterrupt:
+        logger.warning("⚠️ Bot fermato da utente")
+    except Exception as e:
+        logger.error(f"❌ Errore critico: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    finally:
+        logger.warning("👋 Bot terminato")
 
 if __name__ == '__main__':
     main()
