@@ -426,23 +426,22 @@ def find_course_id(session, class_name, class_date, class_time):
 def send_notification_from_thread(bot, user_id, message):
     """
     Invia notifica Telegram da thread scheduler
-    Usa asyncio.run_coroutine_threadsafe per evitare errori
+    MODIFICATO: Usa asyncio.run() per creare un nuovo event loop
     """
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
     async def send():
-        await bot.send_message(chat_id=user_id, text=message)
+        try:
+            await bot.send_message(chat_id=user_id, text=message)
+            logger.info(f"📲 Notifica inviata a {user_id}")
+        except Exception as e:
+            logger.error(f"❌ Errore send_message: {e}")
     
     try:
-        future = asyncio.run_coroutine_threadsafe(send(), loop)
-        future.result(timeout=10)
-        logger.info(f"📲 Notifica inviata a {user_id}")
+        # Crea un nuovo event loop per questo thread
+        asyncio.run(send())
     except Exception as e:
         logger.error(f"❌ Errore invio notifica: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 # Comando /start
