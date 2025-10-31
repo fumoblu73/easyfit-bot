@@ -9,6 +9,7 @@ import requests
 import threading
 import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import time
 
 # Configurazione logging
 logging.basicConfig(
@@ -1140,17 +1141,17 @@ def keep_alive_ping():
 
 
 # =============================================================================
-# MAIN
+# MAIN CON AUTO-RESTART
 # =============================================================================
 
 def main():
-    """Avvia il bot"""
+    """Avvia il bot con sistema di auto-restart"""
     
     from datetime import timezone
     startup_time = datetime.now(timezone.utc)
     
     logger.info("=" * 60)
-    logger.info("🚀 AVVIO EASYFIT BOT")
+    logger.info("🚀 AVVIO EASYFIT BOT v2.0 (AUTO-RESTART)")
     logger.info(f"⏰ Ora UTC: {startup_time.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"⏰ Ora ITA: {(startup_time + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
@@ -1203,6 +1204,7 @@ def main():
     logger.info("✅ BOT PRONTO E OPERATIVO!")
     logger.info("⏰ Attivo 8-21 UTC per prenotazioni")
     logger.info("💓 Keep-alive attivo 24/7")
+    logger.info("🔄 Sistema auto-restart abilitato")
     logger.info("📱 Comandi disponibili su Telegram")
     logger.info("=" * 60)
     
@@ -1223,17 +1225,37 @@ def main():
     signal.signal(signal.SIGTERM, shutdown_handler)
     signal.signal(signal.SIGINT, shutdown_handler)
     
-    # Avvia bot
-    try:
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-    except KeyboardInterrupt:
-        logger.warning("⚠️ Bot fermato da utente")
-    except Exception as e:
-        logger.error(f"❌ Errore critico: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-    finally:
-        logger.warning("👋 Bot terminato")
+    # =========================================================================
+    # LOOP CON AUTO-RESTART
+    # =========================================================================
+    max_retries = 5
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            logger.info(f"🚀 Avvio polling (tentativo {retry_count + 1}/{max_retries})...")
+            application.run_polling(allowed_updates=Update.ALL_TYPES)
+            break  # Uscita pulita
+            
+        except KeyboardInterrupt:
+            logger.warning("⚠️ Bot fermato da utente")
+            break
+            
+        except Exception as e:
+            retry_count += 1
+            logger.error(f"❌ Errore critico (tentativo {retry_count}/{max_retries}): {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            if retry_count < max_retries:
+                wait_time = min(60 * retry_count, 300)  # Max 5 minuti
+                logger.warning(f"⏳ Riavvio tra {wait_time} secondi...")
+                time.sleep(wait_time)
+                logger.info("🔄 Riavvio bot...")
+            else:
+                logger.error("❌ Troppi errori consecutivi, termino.")
+    
+    logger.warning("👋 Bot terminato")
 
 if __name__ == '__main__':
     main()
