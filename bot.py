@@ -242,12 +242,6 @@ def get_calendar_courses(session, start_date, end_date):
             courses = response.json()
             logger.info(f"✅ Recuperate {len(courses)} lezioni")
             
-            # DEBUG: Log formato RAW prime 3 lezioni
-            if courses:
-                logger.info("🔍 DEBUG - Prime 3 lezioni RAW:")
-                for i, course in enumerate(courses[:3]):
-                    logger.info(f"   #{i+1}: {course}")
-            
             return courses
         else:
             logger.error(f"❌ Errore calendario: {response.status_code}")
@@ -400,16 +394,6 @@ def find_course_id(session, class_name, class_date, class_time):
                     return course_id
         
         logger.warning(f"❌ Lezione non trovata: {class_name} {class_date} {class_time}")
-        logger.warning(f"   Corsi disponibili in {class_date}:")
-        for course in courses[:5]:  # Log primi 5 per debug
-            for slot in course.get('slots', []):
-                start_dt = slot.get('startDateTime', '')
-                if start_dt:
-                    start_dt = start_dt.split('[')[0]
-                    dt = parse_course_datetime(start_dt)
-                    if dt:
-                        logger.warning(f"   - {course.get('name')} alle {dt.strftime('%H:%M')}")
-        
         return None
         
     except Exception as e:
@@ -423,25 +407,45 @@ def find_course_id(session, class_name, class_date, class_time):
 # TELEGRAM BOT FUNCTIONS
 # =============================================================================
 
-def send_notification_from_thread(bot, user_id, message):
+def send_notification_sync(bot, user_id, message):
     """
-    Invia notifica Telegram da thread scheduler
-    MODIFICATO: Usa asyncio.run() per creare un nuovo event loop
+    Invia notifica Telegram in modo sincrono da scheduler
+    Usa un thread separato per evitare interferenze con il loop principale
     """
-    async def send():
-        try:
+    import threading
+    
+    result = {'success': False, 'error': None}
+    
+    def run_in_thread():
+        """Esegue la notifica in un thread con loop dedicato"""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        async def send():
             await bot.send_message(chat_id=user_id, text=message)
+        
+        try:
+            loop.run_until_complete(send())
+            result['success'] = True
             logger.info(f"📲 Notifica inviata a {user_id}")
         except Exception as e:
+            result['error'] = e
             logger.error(f"❌ Errore send_message: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+        finally:
+            loop.close()
     
     try:
-        # Crea un nuovo event loop per questo thread
-        asyncio.run(send())
+        # Esegui in thread separato
+        thread = threading.Thread(target=run_in_thread, daemon=True)
+        thread.start()
+        thread.join(timeout=10)
+        
+        if not result['success'] and result['error']:
+            raise result['error']
     except Exception as e:
         logger.error(f"❌ Errore invio notifica: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
 
 
 # Comando /start
@@ -1001,7 +1005,7 @@ def check_and_book(application):
                         f"Potrebbe essere stata cancellata."
                     )
                     
-                    send_notification_from_thread(
+                    send_notification_sync(
                         application.bot,
                         user_id,
                         message
@@ -1041,7 +1045,7 @@ def check_and_book(application):
                             f"Controlla l'app EasyFit per aggiornamenti."
                         )
                     
-                    send_notification_from_thread(
+                    send_notification_sync(
                         application.bot,
                         user_id,
                         message
@@ -1091,7 +1095,7 @@ def check_and_book(application):
                             f"Prova manualmente su app EasyFit."
                         )
                     
-                    send_notification_from_thread(
+                    send_notification_sync(
                         application.bot,
                         user_id,
                         message
@@ -1113,7 +1117,7 @@ def check_and_book(application):
                         f"Se il problema persiste, prenota manualmente."
                     )
                     
-                    send_notification_from_thread(
+                    send_notification_sync(
                         application.bot,
                         user_id,
                         message
@@ -1185,7 +1189,7 @@ def main():
     startup_time = datetime.now(timezone.utc)
     
     logger.info("=" * 60)
-    logger.info("🚀 AVVIO EASYFIT BOT v2.0 (AUTO-RESTART)")
+    logger.info("🚀 AVVIO EASYFIT BOT v2.1 FINAL")
     logger.info(f"⏰ Ora UTC: {startup_time.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"⏰ Ora ITA: {(startup_time + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
