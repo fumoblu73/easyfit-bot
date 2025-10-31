@@ -341,7 +341,10 @@ def book_course_easyfit(session, course_appointment_id, try_waitlist=True):
 
 
 def find_course_id(session, class_name, class_date, class_time):
-    """Trova il courseAppointmentId per una lezione specifica"""
+    """
+    Trova il courseAppointmentId per una lezione specifica
+    MODIFICATO: Cerca dentro gli slots, non in 'start' che non esiste
+    """
     try:
         logger.info(f"🔎 Cerco: {class_name} {class_date} {class_time}")
         
@@ -360,27 +363,59 @@ def find_course_id(session, class_name, class_date, class_time):
         # Cerca lezione matching
         for course in courses:
             course_name = course.get('name', '')
-            course_start = course.get('start', '')
+            course_id = course.get('id')  # ID del corso base
             
-            # Parse time da ISO
-            if course_start:
-                course_datetime = datetime.fromisoformat(course_start.replace('Z', '+00:00'))
-                course_time_str = course_datetime.strftime('%H:%M')
+            # L'API restituisce gli orari dentro 'slots'
+            slots = course.get('slots', [])
+            
+            for slot in slots:
+                start_datetime_str = slot.get('startDateTime', '')
+                
+                if not start_datetime_str:
+                    continue
+                
+                # Rimuovi timezone [Europe/Rome] se presente
+                start_datetime_str = start_datetime_str.split('[')[0]
+                
+                # Parse datetime
+                slot_datetime = parse_course_datetime(start_datetime_str)
+                
+                if not slot_datetime:
+                    continue
+                
+                # Estrai ora locale (già in +01:00)
+                slot_time_str = slot_datetime.strftime('%H:%M')
                 
                 # Match nome E orario
-                if class_name.lower() in course_name.lower() and course_time_str == class_time:
-                    course_id = course.get('courseAppointmentId')
-                    logger.info(f"✅ Trovato ID: {course_id}")
+                name_match = class_name.lower() in course_name.lower()
+                time_match = slot_time_str == class_time
+                
+                if name_match and time_match:
+                    logger.info(f"✅ Trovato corso!")
+                    logger.info(f"   ID: {course_id}")
                     logger.info(f"   Nome: {course_name}")
-                    logger.info(f"   Orario: {course_time_str}")
-                    logger.info(f"   Posti: {course.get('availableSlots', 'N/A')}/{course.get('maxSlots', 'N/A')}")
+                    logger.info(f"   Orario: {slot_time_str}")
+                    logger.info(f"   Prenotabile: {slot.get('bookable', 'N/A')}")
+                    logger.info(f"   Già prenotato: {slot.get('alreadyBooked', 'N/A')}")
                     return course_id
         
         logger.warning(f"❌ Lezione non trovata: {class_name} {class_date} {class_time}")
+        logger.warning(f"   Corsi disponibili in {class_date}:")
+        for course in courses[:5]:  # Log primi 5 per debug
+            for slot in course.get('slots', []):
+                start_dt = slot.get('startDateTime', '')
+                if start_dt:
+                    start_dt = start_dt.split('[')[0]
+                    dt = parse_course_datetime(start_dt)
+                    if dt:
+                        logger.warning(f"   - {course.get('name')} alle {dt.strftime('%H:%M')}")
+        
         return None
         
     except Exception as e:
         logger.error(f"❌ Errore find_course_id: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 
