@@ -390,19 +390,40 @@ def find_course_id(session, class_name, class_date, class_time):
 def send_notification_from_thread(application, user_id, message):
     """
     Invia notifica Telegram da thread scheduler
-    FIXED: Usa il loop dell'applicazione principale
+    FIXED: Usa create_task nel loop dell'applicazione
     """
     try:
-        async def send():
-            await application.bot.send_message(chat_id=user_id, text=message)
+        import asyncio
         
-        # Usa il loop dell'applicazione principale
-        loop = application.updater._loop
-        future = asyncio.run_coroutine_threadsafe(send(), loop)
-        future.result(timeout=10)
-        logger.info(f"📲 Notifica inviata a {user_id}")
+        async def send():
+            try:
+                await application.bot.send_message(chat_id=user_id, text=message)
+                logger.info(f"📲 Notifica inviata a {user_id}")
+            except Exception as e:
+                logger.error(f"❌ Errore invio messaggio: {e}")
+        
+        # Ottieni il loop dall'application - metodo più robusto
+        try:
+            # python-telegram-bot v20+ usa questo pattern
+            loop = application._job_queue._application._loop
+        except:
+            try:
+                # Fallback: prova tramite updater
+                loop = application.updater.job_queue._application._loop
+            except:
+                # Ultimo fallback: ottieni il running loop
+                try:
+                    loop = asyncio.get_running_loop()
+                except:
+                    loop = asyncio.get_event_loop()
+        
+        # Schedula la coroutine nel loop
+        asyncio.run_coroutine_threadsafe(send(), loop)
+        
     except Exception as e:
         logger.error(f"❌ Errore invio notifica: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 # Comando /start
