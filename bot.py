@@ -605,6 +605,17 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Salva per dopo
     context.user_data['date_slots'] = date_slots
     
+    # Recupera il corso completo per avere i posti disponibili
+    all_courses = context.user_data.get('courses', [])
+    class_name = context.user_data.get('class_name', '')
+    
+    # Trova il corso corrispondente
+    current_course = None
+    for course in all_courses:
+        if course.get('name') == class_name:
+            current_course = course
+            break
+    
     # Crea bottoni per orari
     keyboard = []
     for slot in date_slots:
@@ -614,13 +625,22 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             start_datetime_str = start_datetime_str.split('[')[0]
             time_str = start_datetime_str.split('T')[1][:5]  # HH:MM
             
-            available = slot.get('availableSlots', 0)
-            max_slots = slot.get('maxSlots', 0)
-            
-            if available > 0:
-                status = f"✅ {available}/{max_slots}"
+            # FIX: Leggi i posti dal corso principale, non dallo slot
+            if current_course:
+                booked = current_course.get('bookedParticipants', 0)
+                max_slots = current_course.get('maxParticipants', 0)
+                
+                # Calcola posti disponibili
+                if booked is not None and max_slots is not None:
+                    available = max_slots - booked
+                    if available > 0:
+                        status = f"✅ {available}/{max_slots}"
+                    else:
+                        status = "⏳ Piena"
+                else:
+                    status = "❓"
             else:
-                status = "⏳ Piena"
+                status = "❓"
             
             button_text = f"🕐 {time_str} ({status})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f'time_{time_str}')])
@@ -629,7 +649,6 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     date_obj = datetime.strptime(date_str, '%Y-%m-%d')
     day_name = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'][date_obj.weekday()]
-    class_name = context.user_data.get('class_name', 'Lezione')
     
     await query.edit_message_text(
         f"📚 {class_name}\n"
@@ -1010,10 +1029,12 @@ def check_and_book(application):
     logger.info(f"⏰ Ora UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:
+        logger.info("📊 Step 1: Connessione database...")
         # Connessione con retry
         conn = get_db_connection()
         cur = conn.cursor()
         
+        logger.info("📊 Step 2: Query prenotazioni pending...")
         # Trova tutte le prenotazioni pending scadute
         cur.execute(
             """
@@ -1034,6 +1055,7 @@ def check_and_book(application):
             release_db_connection(conn)
             return
         
+        logger.info("📊 Step 3: Login EasyFit...")
         # LOGIN UNA VOLTA SOLA
         session = easyfit_login()
         if not session:
@@ -1042,11 +1064,12 @@ def check_and_book(application):
             release_db_connection(conn)
             return
         
+        logger.info(f"📊 Step 4: Processo {len(bookings_to_make)} prenotazioni...")
         # Processa ogni prenotazione
-        for booking in bookings_to_make:
+        for idx, booking in enumerate(bookings_to_make, 1):
             booking_id, user_id, class_name, class_date, class_time, booking_date = booking
             
-            logger.info(f"📝 PRENOTAZIONE #{booking_id}")
+            logger.info(f"📝 PRENOTAZIONE #{booking_id} ({idx}/{len(bookings_to_make)})")
             logger.info(f"   📚 {class_name}")
             logger.info(f"   📅 {class_date} ore {class_time}")
             
@@ -1056,24 +1079,32 @@ def check_and_book(application):
                 logger.warning(f"   ⚠️ In ritardo di {int(delay)} minuti")
             
             try:
+                logger.info(f"   🔎 Step 4.1: Cerco ID lezione...")
                 # TROVA ID LEZIONE
                 course_appointment_id = find_course_id(session, class_name, str(class_date), class_time)
                 
                 if not course_appointment_id:
+                    logger.warning(f"   ❌ Step 4.1: Lezione non trovata")
                     # Segna come completata (non trovata)
                     cur.execute(
                         "UPDATE bookings SET status = 'completed' WHERE id = %s",
                         (booking_id,)
                     )
                     conn.commit()
-                    logger.warning(f"   ❌ Lezione non trovata nel calendario - marcata come completata")
+                    logger.info(f"   ✅ Step 4.2: Database aggiornato (completed)")
                     continue
+                
+                logger.info(f"   ✅ Step 4.1: ID trovato: {course_appointment_id}")
+                logger.info(f"   📝 Step 4.2: Avvio prenotazione...")
                 
                 # PRENOTA
                 success, status, response = book_course_easyfit(session, course_appointment_id)
                 
+                logger.info(f"   📊 Step 4.2: Risultato prenotazione: success={success}, status={status}")
+                
                 if success:
                     # Aggiorna status nel database
+                    logger.info(f"   💾 Step 4.3: Aggiorno database con status={status}...")
                     cur.execute(
                         "UPDATE bookings SET status = %s WHERE id = %s",
                         (status, booking_id)
@@ -1084,24 +1115,32 @@ def check_and_book(application):
                         logger.info(f"🎉 Prenotazione #{booking_id} COMPLETATA!")
                     elif status == "waitlisted":
                         logger.info(f"⏳ Prenotazione #{booking_id} IN LISTA D'ATTESA")
+                    
+                    logger.info(f"   ✅ Step 4.3: Database aggiornato")
                 else:
                     # Prenotazione fallita
                     logger.error(f"❌ Prenotazione #{booking_id} fallita - Status: {status}")
                     
                     # Segna come completata comunque
+                    logger.info(f"   💾 Step 4.3: Marco come completata...")
                     cur.execute(
                         "UPDATE bookings SET status = 'completed' WHERE id = %s",
                         (booking_id,)
                     )
                     conn.commit()
+                    logger.info(f"   ✅ Step 4.3: Database aggiornato")
             
             except Exception as booking_error:
                 # Errore specifico per questa prenotazione
                 logger.error(f"❌ Errore processamento prenotazione #{booking_id}: {booking_error}")
+                logger.error(f"   Traceback: {booking_error}", exc_info=True)
+                # Continua con le altre prenotazioni
                 continue
         
+        logger.info("📊 Step 5: Chiudo connessione database...")
         cur.close()
         release_db_connection(conn)
+        logger.info("✅ Check completato con successo")
         
     except psycopg2.OperationalError as db_error:
         # Errore connessione database - non bloccare lo scheduler
