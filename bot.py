@@ -544,7 +544,15 @@ async def class_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     if date_key not in courses_by_date:
                         courses_by_date[date_key] = []
-                    courses_by_date[date_key].append(slot)
+                    
+                    # Salva slot + dati del corso parent per avere bookedParticipants/maxParticipants
+                    slot_with_course_data = {
+                        'slot': slot,
+                        'bookedParticipants': course.get('bookedParticipants', None),
+                        'maxParticipants': course.get('maxParticipants', None),
+                        'waitingListActive': course.get('waitingListActive', False)
+                    }
+                    courses_by_date[date_key].append(slot_with_course_data)
     
     # Salva per dopo
     context.user_data['courses_by_date'] = courses_by_date
@@ -587,20 +595,28 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Crea bottoni per orari
     keyboard = []
-    for slot in date_slots:
+    for slot_data in date_slots:
+        # Ora abbiamo slot + dati del corso
+        slot = slot_data.get('slot', {})
+        booked = slot_data.get('bookedParticipants')
+        max_slots = slot_data.get('maxParticipants')
+        
         start_datetime_str = slot.get('startDateTime', '')
         if start_datetime_str:
             # Rimuovi timezone
             start_datetime_str = start_datetime_str.split('[')[0]
             time_str = start_datetime_str.split('T')[1][:5]  # HH:MM
             
-            available = slot.get('availableSlots', 0)
-            max_slots = slot.get('maxSlots', 0)
-            
-            if available > 0:
-                status = f"✅ {available}/{max_slots}"
+            # Calcola posti disponibili
+            if booked is not None and max_slots is not None:
+                available = max_slots - booked
+                if available > 0:
+                    status = f"✅ {available}/{max_slots}"
+                else:
+                    status = "⏳ Piena"
             else:
-                status = "⏳ Piena"
+                # Fallback se i dati non sono disponibili
+                status = "📋"
             
             button_text = f"🕐 {time_str} ({status})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f'time_{time_str}')])
@@ -1020,10 +1036,20 @@ def run_health_server():
 def keep_alive_ping():
     """Fa un ping a se stesso ogni 10 minuti per evitare spin-down"""
     try:
-        port = int(os.environ.get('PORT', 10000))
-        url = f"http://localhost:{port}/"
+        # Usa URL esterno se disponibile (Render), altrimenti localhost (sviluppo locale)
+        external_url = os.getenv('RENDER_EXTERNAL_URL', '')
+        
+        if external_url:
+            url = external_url
+            logger.info(f"💓 Keep-alive ping esterno: {url}")
+        else:
+            # Fallback per sviluppo locale
+            port = int(os.environ.get('PORT', 10000))
+            url = f"http://localhost:{port}/"
+            logger.info(f"💓 Keep-alive ping locale: {url}")
+        
         response = requests.get(url, timeout=5)
-        logger.info("💓 Keep-alive ping OK")
+        logger.info("✅ Keep-alive ping OK")
     except Exception as e:
         logger.error(f"❌ Keep-alive ping fallito: {e}")
 
