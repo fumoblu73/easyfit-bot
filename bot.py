@@ -395,45 +395,6 @@ def find_course_id(session, class_name, class_date, class_time):
 # TELEGRAM BOT FUNCTIONS
 # =============================================================================
 
-def send_notification_from_thread(application, user_id, message):
-    """
-    Invia notifica Telegram da thread scheduler
-    FIXED: Usa create_task nel loop dell'applicazione
-    """
-    try:
-        import asyncio
-        
-        async def send():
-            try:
-                await application.bot.send_message(chat_id=user_id, text=message)
-                logger.info(f"📲 Notifica inviata a {user_id}")
-            except Exception as e:
-                logger.error(f"❌ Errore invio messaggio: {e}")
-        
-        # Ottieni il loop dall'application - metodo più robusto
-        try:
-            # python-telegram-bot v20+ usa questo pattern
-            loop = application._job_queue._application._loop
-        except:
-            try:
-                # Fallback: prova tramite updater
-                loop = application.updater.job_queue._application._loop
-            except:
-                # Ultimo fallback: ottieni il running loop
-                try:
-                    loop = asyncio.get_running_loop()
-                except:
-                    loop = asyncio.get_event_loop()
-        
-        # Schedula la coroutine nel loop
-        asyncio.run_coroutine_threadsafe(send(), loop)
-        
-    except Exception as e:
-        logger.error(f"❌ Errore invio notifica: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-
-
 # Comando /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -443,8 +404,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🤖 Cosa posso fare:\n"
         f"• Prenotare lezioni 72 ore prima automaticamente\n"
         f"• Gestire automaticamente la lista d'attesa\n"
-        f"• Attivo dalle 8 alle 21 ogni giorno\n"
-        f"• Notifiche quando prenoto\n\n"
+        f"• Attivo dalle 8 alle 21 ogni giorno\n\n"
         f"📋 Comandi disponibili:\n"
         f"/prenota - Programma una nuova prenotazione\n"
         f"/lista - Vedi prenotazioni programmate\n"
@@ -724,7 +684,6 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏰ Prenoterò automaticamente:\n"
             f"   {booking_datetime.strftime('%d/%m/%Y alle %H:%M')} UTC\n"
             f"   (72 ore prima)\n\n"
-            f"📲 Ti avviserò quando prenoto!\n\n"
             f"ID Prenotazione: #{booking_id}"
         )
         
@@ -903,8 +862,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 LISTA D'ATTESA:\n"
         "Se una lezione è piena, il bot proverà automaticamente\n"
         "ad inserirti in lista d'attesa!\n\n"
-        "📲 NOTIFICHE:\n"
-        "Riceverai un messaggio quando il bot prenota per te!\n\n"
         "❓ Problemi? Controlla i logs su Render."
     )
 
@@ -988,22 +945,7 @@ def check_and_book(application):
                     )
                     conn.commit()
                     
-                    # Notifica utente
-                    message = (
-                        f"❌ PRENOTAZIONE NON POSSIBILE\n\n"
-                        f"📚 {class_name}\n"
-                        f"📅 {class_date}\n"
-                        f"🕐 {class_time}\n\n"
-                        f"La lezione non è stata trovata nel calendario.\n"
-                        f"Potrebbe essere stata cancellata."
-                    )
-                    
-                    send_notification_from_thread(
-                        application,
-                        user_id,
-                        message
-                    )
-                    
+                    logger.warning(f"❌ Lezione non trovata nel calendario")
                     continue
                 
                 # PRENOTA
@@ -1017,34 +959,7 @@ def check_and_book(application):
                     )
                     conn.commit()
                     
-                    # Notifica utente
-                    if status == "completed":
-                        message = (
-                            f"✅ PRENOTAZIONE EFFETTUATA!\n\n"
-                            f"📚 {class_name}\n"
-                            f"📅 {class_date}\n"
-                            f"🕐 {class_time}\n\n"
-                            f"Ci vediamo in palestra! 💪"
-                        )
-                    elif status == "waitlisted":
-                        message = (
-                            f"⏳ IN LISTA D'ATTESA\n\n"
-                            f"📚 {class_name}\n"
-                            f"📅 {class_date}\n"
-                            f"🕐 {class_time}\n\n"
-                            f"⚠️ La lezione era piena!\n"
-                            f"Sei stato inserito in lista d'attesa.\n\n"
-                            f"🔔 Ti avviseremo se si libera un posto!\n"
-                            f"Controlla l'app EasyFit per aggiornamenti."
-                        )
-                    
-                    send_notification_from_thread(
-                        application,
-                        user_id,
-                        message
-                    )
-                    
-                    logger.info(f"🎉 Completata prenotazione #{booking_id}")
+                    logger.info(f"🎉 Completata prenotazione #{booking_id} - Status: {status}")
                 else:
                     # Prenotazione fallita
                     logger.error(f"❌ Prenotazione #{booking_id} fallita - Status: {status}")
@@ -1055,68 +970,10 @@ def check_and_book(application):
                         (booking_id,)
                     )
                     conn.commit()
-                    
-                    # Notifica diversa in base al tipo di fallimento
-                    if status == "waitlist_unavailable":
-                        message = (
-                            f"❌ LEZIONE PIENA\n\n"
-                            f"📚 {class_name}\n"
-                            f"📅 {class_date}\n"
-                            f"🕐 {class_time}\n\n"
-                            f"⚠️ La lezione è piena e non ha lista d'attesa disponibile.\n\n"
-                            f"💡 Prova:\n"
-                            f"• Prenotare un altro orario\n"
-                            f"• Controllare manualmente sull'app se si liberano posti"
-                        )
-                    elif status == "full":
-                        message = (
-                            f"❌ LEZIONE PIENA\n\n"
-                            f"📚 {class_name}\n"
-                            f"📅 {class_date}\n"
-                            f"🕐 {class_time}\n\n"
-                            f"⚠️ La lezione è completamente piena.\n"
-                            f"Anche la lista d'attesa non è disponibile.\n\n"
-                            f"💡 Scegli un altro giorno/orario."
-                        )
-                    else:
-                        message = (
-                            f"❌ PRENOTAZIONE FALLITA\n\n"
-                            f"📚 {class_name}\n"
-                            f"📅 {class_date}\n"
-                            f"🕐 {class_time}\n\n"
-                            f"Si è verificato un errore durante la prenotazione.\n"
-                            f"Prova manualmente su app EasyFit."
-                        )
-                    
-                    send_notification_from_thread(
-                        application,
-                        user_id,
-                        message
-                    )
             
             except Exception as booking_error:
                 # Errore specifico per questa prenotazione
                 logger.error(f"❌ Errore processamento prenotazione #{booking_id}: {booking_error}")
-                
-                # Notifica utente dell'errore
-                try:
-                    message = (
-                        f"⚠️ ERRORE TECNICO\n\n"
-                        f"📚 {class_name}\n"
-                        f"📅 {class_date}\n"
-                        f"🕐 {class_time}\n\n"
-                        f"Si è verificato un errore tecnico.\n"
-                        f"Riproverò al prossimo controllo.\n\n"
-                        f"Se il problema persiste, prenota manualmente."
-                    )
-                    
-                    send_notification_from_thread(
-                        application,
-                        user_id,
-                        message
-                    )
-                except:
-                    pass
                 
                 # Continua con le altre prenotazioni
                 continue
