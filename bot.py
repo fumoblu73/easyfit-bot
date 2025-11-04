@@ -1137,7 +1137,24 @@ def main():
     
     signal.signal(signal.SIGTERM, shutdown_handler)
     signal.signal(signal.SIGINT, shutdown_handler)
-    
+
+    # --- KEEP ALIVE per Koyeb ---
+    from flask import Flask
+    import threading
+
+    def run_flask():
+        app = Flask(__name__)
+
+        @app.route('/')
+        def health():
+            return "Bot attivo", 200
+
+        app.run(host="0.0.0.0", port=8080)
+
+    # Avvia piccolo server HTTP in parallelo
+    threading.Thread(target=run_flask).start()
+    # --- FINE KEEP ALIVE ---
+
     # Avvia bot
     try:
         application.run_polling(allowed_updates=Update.ALL_TYPES)
