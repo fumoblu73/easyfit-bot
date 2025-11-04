@@ -1138,21 +1138,25 @@ def main():
     signal.signal(signal.SIGTERM, shutdown_handler)
     signal.signal(signal.SIGINT, shutdown_handler)
 
-    # --- KEEP ALIVE per Koyeb ---
+   # --- KEEP ALIVE per Koyeb ---
     from flask import Flask
     import threading
 
     def run_flask():
+        """
+        Avvia un piccolo server HTTP per evitare che Koyeb spenga il container.
+        """
         app = Flask(__name__)
 
         @app.route('/')
         def health():
-            return "Bot attivo", 200
+            return "✅ EasyFit Bot attivo e funzionante!", 200
 
+        # Flask ascolta sulla porta 8080, che Koyeb apre di default
         app.run(host="0.0.0.0", port=8080)
 
-    # Avvia piccolo server HTTP in parallelo
-    threading.Thread(target=run_flask).start()
+    # Avvia il mini server Flask in un thread separato
+    threading.Thread(target=run_flask, daemon=True).start()
     # --- FINE KEEP ALIVE ---
 
     # Avvia bot
