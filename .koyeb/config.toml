@@ -1,0 +1,32 @@
+# Koyeb Configuration for EasyFit Bot
+
+[app]
+name = "easyfit-bot"
+
+[services.easyfit-bot]
+type = "web"
+instance_type = "free"  # Piano Hobby gratuito
+regions = ["fra"]  # Frankfurt (più vicino all'Italia)
+
+[services.easyfit-bot.ports]
+- port = 8080
+  protocol = "http"
+
+[services.easyfit-bot.routes]
+- path = "/"
+  port = 8080
+
+[services.easyfit-bot.env]
+PORT = "8080"
+
+[services.easyfit-bot.health_checks]
+- path = "/"
+  port = 8080
+  protocol = "http"
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "30s"
+
+[services.easyfit-bot.scaling]
+min = 1
+max = 1  # Free tier: 1 istanza
