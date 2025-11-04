@@ -1,29 +1,17 @@
-# Dockerfile per EasyFit Bot su Koyeb
+# --- EASYFIT BOT Dockerfile per Koyeb ---
 FROM python:3.11-slim
 
-# Set working directory
+# Imposta directory di lavoro
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+# Copia i file
+COPY . /app
 
-# Copy requirements first (for caching)
-COPY requirements.txt .
-
-# Install Python dependencies
+# Installa le dipendenze
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY bot.py .
-
-# Expose port
+# Espone la porta usata dal keep-alive Flask
 EXPOSE 8080
 
-# Health check endpoint
-ENV PORT=8080
-
-# Run bot
-CMD ["python", "-u", "bot.py"]
+# Avvio del bot
+CMD ["python", "bot.py"]
