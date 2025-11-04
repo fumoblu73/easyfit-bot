@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+venv
+.venv
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Documentation
+README.md
+*.md
+
+# Deploy specifici (non servono)
+render.yaml
+fly.toml
+Dockerfile.old
+Dockerfile.koyeb
+
+# Files non necessari
+credenziali_app
+calendario_lezioni_e_prenotazione
+URL_raw_per_file_bot.py
+FLY_DEPLOY_GUIDE.md
+KOYEB_DEPLOY_GUIDE.md
