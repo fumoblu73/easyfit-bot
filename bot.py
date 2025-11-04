@@ -359,21 +359,29 @@ def find_course_id(session, class_name, class_date, class_time):
         # Cerca lezione matching
         for course in courses:
             course_name = course.get('name', '')
-            course_start = course.get('start', '')
             
-            # Parse time da ISO
-            if course_start:
-                course_datetime = datetime.fromisoformat(course_start.replace('Z', '+00:00'))
-                course_time_str = course_datetime.strftime('%H:%M')
+            # L'API restituisce slots array, non start diretto
+            for slot in course.get('slots', []):
+                start_datetime_str = slot.get('startDateTime', '')
                 
-                # Match nome E orario
-                if class_name.lower() in course_name.lower() and course_time_str == class_time:
-                    course_id = course.get('courseAppointmentId')
-                    logger.info(f"✅ Trovato ID: {course_id}")
-                    logger.info(f"   Nome: {course_name}")
-                    logger.info(f"   Orario: {course_time_str}")
-                    logger.info(f"   Posti: {course.get('availableSlots', 'N/A')}/{course.get('maxSlots', 'N/A')}")
-                    return course_id
+                if start_datetime_str:
+                    # Rimuovi timezone [Europe/Rome] se presente
+                    start_datetime_str = start_datetime_str.split('[')[0]
+                    
+                    # Parse datetime usando la funzione esistente
+                    slot_datetime = parse_course_datetime(start_datetime_str)
+                    
+                    if slot_datetime:
+                        course_time_str = slot_datetime.strftime('%H:%M')
+                        
+                        # Match nome E orario
+                        if class_name.lower() in course_name.lower() and course_time_str == class_time:
+                            course_id = course.get('id')
+                            logger.info(f"✅ Trovato ID: {course_id}")
+                            logger.info(f"   Nome: {course_name}")
+                            logger.info(f"   Orario: {course_time_str}")
+                            logger.info(f"   Posti: {course.get('bookedParticipants', 'N/A')}/{course.get('maxParticipants', 'N/A')}")
+                            return course_id
         
         logger.warning(f"❌ Lezione non trovata: {class_name} {class_date} {class_time}")
         return None
