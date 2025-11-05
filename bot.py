@@ -659,19 +659,19 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_str = query.data.split('_')[1]
     context.user_data['time'] = time_str
     
-    # Calcola quando prenotare (72h prima)
-    class_datetime = datetime.strptime(
+    # L'orario selezionato dall'utente è GIÀ in ora italiana
+    # Creiamo datetime naive (senza timezone)
+    class_datetime_naive = datetime.strptime(
         f"{context.user_data['date']} {time_str}", 
         '%Y-%m-%d %H:%M'
     )
     
-    # Timezone-aware UTC
-    from datetime import timezone
-    class_datetime_utc = class_datetime.replace(tzinfo=timezone.utc)
-    booking_datetime = class_datetime_utc - timedelta(hours=72)
+    # Questo orario è in ora italiana, quindi sottraiamo 72 ore mantenendo l'ora italiana
+    booking_datetime_ita = class_datetime_naive - timedelta(hours=72)
     
-    # Converti in ora italiana per il messaggio
-    booking_datetime_ita = booking_datetime + timedelta(hours=1)
+    # Convertiamo in UTC per salvare nel database (UTC = ora italiana - 1 ora)
+    from datetime import timezone
+    booking_datetime_utc = (booking_datetime_ita - timedelta(hours=1)).replace(tzinfo=timezone.utc)
     
     # Salva nel database
     try:
@@ -690,7 +690,7 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data['class_name'],
                 context.user_data['date'],
                 time_str,
-                booking_datetime,
+                booking_datetime_utc,  # Salviamo in UTC
                 'pending'
             )
         )
