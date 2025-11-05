@@ -1,17 +1,126 @@
-# --- EASYFIT BOT Dockerfile per Koyeb ---
+# Dockerfile per EasyFit Bot su Koyeb
 FROM python:3.11-slim
 
-# Imposta directory di lavoro
+# Set working directory
 WORKDIR /app
 
-# Copia i file
-COPY . /app
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
 
-# Installa le dipendenze
+# Copy requirements first (for caching)
+COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Espone la porta usata dal keep-alive Flask
+# Copy application code
+COPY bot.py .
+
+# Expose port
 EXPOSE 8080
 
-# Avvio del bot
-CMD ["python", "bot.py"]
+# Health check endpoint
+ENV PORT=8080
+
+# Run bot
+CMD ["python", "-u", "bot.py"]
+```
+
+### 2.4 Commit
+1. Commit message: `Add Dockerfile for Koyeb`
+2. Clicca **"Commit new file"**
+
+✅ **Fatto il secondo file!**
+
+---
+
+## 📝 **STEP 3: Crea/Aggiorna .dockerignore**
+
+### 3.1 Verifica se Esiste
+1. Guarda nella lista file del repository
+2. C'è già `.dockerignore`?
+
+**Se SÌ:** Clicca sul file → **"Edit this file"** (icona matita)
+
+**Se NO:** Clicca **"Add file"** → **"Create new file"**
+
+### 3.2 Nome File (se nuovo)
+```
+.dockerignore
+```
+
+### 3.3 Incolla/Sostituisci il Contenuto
+```
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+venv
+.venv
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Documentation
+README.md
+*.md
+
+# Deploy specifici
+render.yaml
+fly.toml
+runtime.txt
+.python-version
+```
+
+### 3.4 Commit
+1. Commit message: `Update .dockerignore for Koyeb`
+2. Clicca **"Commit changes"**
+
+✅ **Fatto il terzo file!**
+
+---
+
+## ✅ **VERIFICA FINALE**
+
+Torna alla home del repository. Dovresti vedere:
+```
+easyfit-bot/
+├── .gitignore
+├── .koyeb/              ← NUOVA
+│   └── config.toml      ← NUOVO
+├── .python-version
+├── Dockerfile           ← NUOVO
+├── .dockerignore        ← NUOVO/AGGIORNATO
+├── README.md
+├── bot.py
+├── requirements.txt
+└── runtime.txt
