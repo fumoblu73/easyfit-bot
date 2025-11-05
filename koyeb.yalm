@@ -1,0 +1,37 @@
+services:
+  - name: easyfit-bot
+    type: web
+    instance_type: free
+    regions:
+      - fra
+    env:
+      - key: TELEGRAM_TOKEN
+        scope: project
+      - key: DATABASE_URL
+        scope: project
+      - key: EASYFIT_EMAIL
+        scope: project
+      - key: EASYFIT_PASSWORD
+        scope: project
+      - key: PORT
+        value: "8000"
+    ports:
+      - port: 8000
+        protocol: http
+    routes:
+      - path: /
+        port: 8000
+    healthcheck:
+      http:
+        port: 8000
+        path: /
+    scaling:
+      min: 1
+      max: 1
+    build:
+      type: buildpack
+      buildpack:
+        run_command: python bot.py
+    git:
+      branch: main
+      build_command: pip install -r requirements.txt
