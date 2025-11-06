@@ -601,6 +601,20 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
     
+    # Recupera info corso padre per posti disponibili
+    all_courses = context.user_data.get('courses', [])
+    course_name = context.user_data.get('class_name', '')
+    
+    booked_participants = None
+    max_participants = None
+    
+    # Trova il corso corrispondente per prendere i posti
+    for course in all_courses:
+        if course.get('name') == course_name:
+            booked_participants = course.get('bookedParticipants')
+            max_participants = course.get('maxParticipants')
+            break
+    
     for slot in date_slots:
         start_datetime_str = slot.get('startDateTime', '')
         if start_datetime_str:
@@ -614,15 +628,17 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Calcola se è prenotabile (>72 ore)
             hours_until = (slot_datetime - now_utc).total_seconds() / 3600 if slot_datetime else 0
             
-            # Standardizza estrazione posti disponibili
-            available = slot.get('availableSlots', 0)
-            max_slots = slot.get('maxSlots', 0)
+            # Calcola posti disponibili dal corso padre
+            if max_participants and max_participants > 0 and booked_participants is not None:
+                available = max_participants - booked_participants
+            else:
+                available = 0
             
             # Determina status da mostrare
             if hours_until > 72:
                 status = "🟢 Prenotabile"
             elif available > 0:
-                status = f"✅ {available}/{max_slots}"
+                status = f"✅ {available} posti liberi"
             else:
                 status = "⏳ Piena"
             
