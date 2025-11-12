@@ -601,6 +601,26 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
     
+    # Recupera info corso padre per disponibilità
+    all_courses = context.user_data.get('courses', [])
+    course_name = context.user_data.get('class_name', '')
+    
+    booked_participants = None
+    max_participants = None
+    waiting_list_active = False
+    waiting_list_participants = None
+    max_waiting_list_participants = None
+    
+    # Trova il corso corrispondente
+    for course in all_courses:
+        if course.get('name') == course_name:
+            booked_participants = course.get('bookedParticipants')
+            max_participants = course.get('maxParticipants')
+            waiting_list_active = course.get('waitingListActive', False)
+            waiting_list_participants = course.get('waitingListParticipants')
+            max_waiting_list_participants = course.get('maxWaitingListParticipants')
+            break
+    
     for slot in date_slots:
         start_datetime_str = slot.get('startDateTime', '')
         if start_datetime_str:
@@ -614,13 +634,36 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Calcola se è prenotabile (>72 ore)
             hours_until = (slot_datetime - now_utc).total_seconds() / 3600 if slot_datetime else 0
             
+            # Estrai nome istruttore
+            employees = slot.get('employees', [])
+            instructor_name = ""
+            if employees and len(employees) > 0:
+                instructor = employees[0]
+                displayed_name = instructor.get('displayedName', '')
+                if displayed_name:
+                    instructor_name = f" • {displayed_name}"
+                else:
+                    # Fallback: costruisci nome da firstname e lastname
+                    firstname = instructor.get('firstname', '')
+                    lastname = instructor.get('lastname', '')
+                    if firstname or lastname:
+                        instructor_name = f" • {firstname} {lastname}".strip()
+            
             # Determina status da mostrare
             if hours_until > 72:
+                # Caso 1: Oltre 72 ore
                 status = "🟢 Prenotabile"
+            elif booked_participants is not None and max_participants is not None and booked_participants < max_participants:
+                # Caso 2: Entro 72 ore con posti liberi
+                status = "✅ Posti liberi"
+            elif waiting_list_active and waiting_list_participants is not None and max_waiting_list_participants is not None and waiting_list_participants < max_waiting_list_participants:
+                # Caso 3: Entro 72 ore, piena ma lista d'attesa disponibile
+                status = "⏳ Lista d'attesa"
             else:
-                status = "⏱️ Prenotazione aperta"
+                # Caso 4: Entro 72 ore, completa (piena + lista piena o non attiva)
+                status = "🚫 Completa"
             
-            button_text = f"🕐 {time_str} ({status})"
+            button_text = f"🕐 {time_str}{instructor_name} ({status})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f'time_{time_str}')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -737,13 +780,38 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
+        # Filtra solo prenotazioni future
+        from datetime import timezone
+        now_utc = datetime.now(timezone.utc)
+        
+        future_bookings = []
+        for booking in bookings:
+            booking_id, class_name, class_date, class_time, booking_date, status = booking
+            
+            # Crea datetime della lezione (assume ora italiana, converti in UTC)
+            class_datetime_str = f"{class_date} {class_time}"
+            class_datetime_naive = datetime.strptime(class_datetime_str, '%Y-%m-%d %H:%M')
+            # Sottrai 1 ora per convertire da ora italiana a UTC
+            class_datetime_utc = (class_datetime_naive - timedelta(hours=1)).replace(tzinfo=timezone.utc)
+            
+            # Mantieni solo se la lezione è nel futuro
+            if class_datetime_utc > now_utc:
+                future_bookings.append(booking)
+        
+        if not future_bookings:
+            await update.message.reply_text(
+                "📋 Non hai prenotazioni future.\n\n"
+                "Usa /prenota per programmarne una!"
+            )
+            return
+        
         message = "📋 LE TUE PRENOTAZIONI:\n\n"
         
         pending = []
         completed = []
         waitlisted = []
         
-        for booking in bookings:
+        for booking in future_bookings:
             booking_id, class_name, class_date, class_time, booking_date, status = booking
             
             if status == 'pending':
