@@ -639,30 +639,27 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Salva per dopo
     context.user_data['date_slots'] = date_slots
     
+    # CHIAVE: Recupera TUTTI i corsi con questo nome
+    all_courses = context.user_data.get('courses', [])
+    course_name = context.user_data.get('class_name', '')
+    
+    # Filtra solo corsi con il nome scelto
+    matching_courses = [c for c in all_courses if c.get('name') == course_name]
+    
     # Crea bottoni per orari
     keyboard = []
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
     
-    # Recupera il corso padre per info generali
-    all_courses = context.user_data.get('courses', [])
-    course_name = context.user_data.get('class_name', '')
-    
-    parent_course = None
-    for course in all_courses:
-        if course.get('name') == course_name:
-            parent_course = course
-            break
-    
     for slot in date_slots:
         start_datetime_str = slot.get('startDateTime', '')
         if start_datetime_str:
             # Rimuovi timezone
-            start_datetime_str = start_datetime_str.split('[')[0]
-            time_str = start_datetime_str.split('T')[1][:5]  # HH:MM
+            start_datetime_str_clean = start_datetime_str.split('[')[0]
+            time_str = start_datetime_str_clean.split('T')[1][:5]  # HH:MM
             
             # Parse datetime dello slot
-            slot_datetime = parse_course_datetime(start_datetime_str)
+            slot_datetime = parse_course_datetime(start_datetime_str_clean)
             
             # Calcola se è prenotabile (>72 ore)
             hours_until = (slot_datetime - now_utc).total_seconds() / 3600 if slot_datetime else 0
@@ -676,34 +673,40 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if displayed_name:
                     instructor_name = f" • {displayed_name}"
                 else:
-                    # Fallback: costruisci nome da firstname e lastname
                     firstname = instructor.get('firstname', '')
                     lastname = instructor.get('lastname', '')
                     if firstname or lastname:
                         instructor_name = f" • {firstname} {lastname}".strip()
             
-            # DETERMINA STATUS - USA DATI DEL CORSO PADRE (non dello slot)
-            if parent_course:
-                booked_participants = parent_course.get('bookedParticipants', 0)
-                max_participants = parent_course.get('maxParticipants', 0)
-                waiting_list_active = parent_course.get('waitingListActive', False)
-                waiting_list_participants = parent_course.get('waitingListParticipants', 0)
-                max_waiting_list_participants = parent_course.get('maxWaitingListParticipants', 0)
+            # TROVA IL CORSO SPECIFICO per questo slot (matching per datetime)
+            course_for_slot = None
+            for course in matching_courses:
+                # Controlla se questo corso contiene questo slot specifico
+                for course_slot in course.get('slots', []):
+                    if course_slot.get('startDateTime') == start_datetime_str:
+                        course_for_slot = course
+                        break
+                if course_for_slot:
+                    break
+            
+            # DETERMINA STATUS usando i dati del corso specifico
+            if course_for_slot:
+                booked = course_for_slot.get('bookedParticipants', 0)
+                max_part = course_for_slot.get('maxParticipants', 0)
+                wait_active = course_for_slot.get('waitingListActive', False)
+                wait_count = course_for_slot.get('waitingListParticipants', 0)
+                max_wait = course_for_slot.get('maxWaitingListParticipants', 0)
                 
                 if hours_until > 72:
-                    # Caso 1: Oltre 72 ore
                     status = "🟢 Prenotabile"
-                elif booked_participants < max_participants:
-                    # Caso 2: Entro 72 ore con posti liberi
+                elif booked < max_part:
                     status = "✅ Posti liberi"
-                elif waiting_list_active and waiting_list_participants < max_waiting_list_participants:
-                    # Caso 3: Entro 72 ore, piena ma lista d'attesa disponibile
+                elif wait_active and wait_count < max_wait:
                     status = "⏳ Lista d'attesa"
                 else:
-                    # Caso 4: Entro 72 ore, completa (piena + lista piena o non attiva)
                     status = "🚫 Completa"
             else:
-                # Fallback se non troviamo il corso padre
+                # Fallback
                 status = "🟢 Prenotabile" if hours_until > 72 else "❓ Verifica app"
             
             button_text = f"🕐 {time_str}{instructor_name} ({status})"
