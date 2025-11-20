@@ -399,12 +399,55 @@ def find_course_id(session, class_name, class_date, class_time):
         return None
 
 
+def cancel_booking_easyfit(session, easyfit_booking_id):
+    """
+    Cancella una prenotazione su EasyFit
+    
+    Args:
+        session: Sessione autenticata EasyFit
+        easyfit_booking_id: ID della prenotazione su EasyFit (es. 1231444436)
+    
+    Returns:
+        bool: True se cancellazione riuscita, False altrimenti
+    """
+    try:
+        logger.info(f"🗑️ Cancellazione prenotazione EasyFit ID: {easyfit_booking_id}")
+        
+        # Endpoint DELETE
+        url = f"{EASYFIT_BASE_URL}/v1/aggregated/calendaritems/easyfit:{easyfit_booking_id}"
+        
+        headers = {
+            "Accept": "*/*",
+            "Accept-Language": "it-IT,it;q=0.9",
+            "Content-Type": "application/json",
+            "Origin": "https://app-easyfitpalestre.it",
+            "Referer": "https://app-easyfitpalestre.it/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw/calendar",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "x-tenant": "easyfit",
+            "x-nox-client-type": "WEB",
+            "x-nox-web-context": "v=1",
+            "x-public-facility-group": "BRANDEDAPP-263FBF081EAB42E6A62602B2DDDE4506",
+            "x-ms-web-context": "/studio/ZWFzeWZpdDoxMjE2OTE1Mzgw"
+        }
+        
+        response = session.delete(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            logger.info("✅ Prenotazione cancellata su EasyFit!")
+            return True
+        else:
+            logger.error(f"❌ Cancellazione fallita: {response.status_code}")
+            logger.error(f"   Response: {response.text[:200]}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Errore cancel_booking_easyfit: {e}")
+        return False
+
+
 # =============================================================================
 # TELEGRAM BOT FUNCTIONS
 # =============================================================================
-
-# Notifiche rimosse - utente vedrà stato con /lista
-
 
 # Comando /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -870,8 +913,13 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Errore nel recuperare le prenotazioni.")
 
 
-# Comando /cancella
+# Comando /cancella - MODIFICATO PER SINCRONIZZAZIONE
 async def cancella(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Cancella una prenotazione
+    - Se pending: cancella solo dal DB
+    - Se completed/waitlisted: cancella sia da EasyFit che dal DB
+    """
     user_id = str(update.effective_user.id)
     
     if not context.args:
@@ -892,9 +940,9 @@ async def cancella(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Verifica che la prenotazione esista e appartenga all'utente
+        # Recupera info prenotazione
         cur.execute(
-            "SELECT class_name, class_date, class_time FROM bookings WHERE id = %s AND user_id = %s",
+            "SELECT class_name, class_date, class_time, status, easyfit_booking_id FROM bookings WHERE id = %s AND user_id = %s",
             (booking_id, user_id)
         )
         
@@ -906,22 +954,99 @@ async def cancella(update: Update, context: ContextTypes.DEFAULT_TYPE):
             release_db_connection(conn)
             return
         
-        class_name, class_date, class_time = result
+        class_name, class_date, class_time, status, easyfit_booking_id = result
         
-        # Cancella
-        cur.execute(
-            "DELETE FROM bookings WHERE id = %s",
-            (booking_id,)
+        # CASO 1: Prenotazione NON ancora eseguita (pending)
+        if status == 'pending':
+            # Cancella solo dal database
+            cur.execute("DELETE FROM bookings WHERE id = %s", (booking_id,))
+            conn.commit()
+            cur.close()
+            release_db_connection(conn)
+            
+            await update.message.reply_text(
+                f"✅ PRENOTAZIONE PROGRAMMATA CANCELLATA\n\n"
+                f"#{booking_id} - {class_name}\n"
+                f"📅 {class_date} ore {class_time}\n\n"
+                f"ℹ️ La prenotazione non era ancora stata eseguita.\n"
+                f"Rimossa solo dal database del bot."
+            )
+            return
+        
+        # CASO 2: Prenotazione già eseguita (completed/waitlisted)
+        if status in ['completed', 'waitlisted']:
+            # Verifica che abbiamo l'ID EasyFit
+            if not easyfit_booking_id:
+                await update.message.reply_text(
+                    f"⚠️ CANCELLAZIONE PARZIALE\n\n"
+                    f"#{booking_id} - {class_name}\n"
+                    f"📅 {class_date} ore {class_time}\n\n"
+                    f"❌ Non ho l'ID della prenotazione su EasyFit.\n"
+                    f"Cancellata solo dal bot.\n\n"
+                    f"⚠️ Devi cancellare manualmente dall'app EasyFit!"
+                )
+                
+                # Cancella dal DB
+                cur.execute("DELETE FROM bookings WHERE id = %s", (booking_id,))
+                conn.commit()
+                cur.close()
+                release_db_connection(conn)
+                return
+            
+            # Abbiamo l'ID! Cancelliamo su EasyFit
+            await update.message.reply_text("🔄 Cancellazione in corso...\n⏳ Attendi...")
+            
+            # Login EasyFit
+            session = easyfit_login()
+            if not session:
+                await update.message.reply_text(
+                    f"❌ ERRORE LOGIN EASYFIT\n\n"
+                    f"Non riesco a connettermi a EasyFit.\n\n"
+                    f"💡 Prova:\n"
+                    f"1. Cancella manualmente dall'app\n"
+                    f"2. Riprova tra qualche minuto"
+                )
+                cur.close()
+                release_db_connection(conn)
+                return
+            
+            # Cancella su EasyFit
+            success = cancel_booking_easyfit(session, easyfit_booking_id)
+            
+            if success:
+                # Cancella anche dal database
+                cur.execute("DELETE FROM bookings WHERE id = %s", (booking_id,))
+                conn.commit()
+                
+                await update.message.reply_text(
+                    f"✅ PRENOTAZIONE CANCELLATA!\n\n"
+                    f"#{booking_id} - {class_name}\n"
+                    f"📅 {class_date} ore {class_time}\n\n"
+                    f"✅ Cancellata su EasyFit\n"
+                    f"✅ Rimossa dal bot\n\n"
+                    f"Il posto è ora disponibile per altri!"
+                )
+            else:
+                await update.message.reply_text(
+                    f"⚠️ CANCELLAZIONE FALLITA\n\n"
+                    f"#{booking_id} - {class_name}\n"
+                    f"📅 {class_date} ore {class_time}\n\n"
+                    f"❌ Errore nella cancellazione su EasyFit.\n\n"
+                    f"💡 Prova a cancellare manualmente dall'app.\n"
+                    f"La prenotazione rimane nel database del bot."
+                )
+            
+            cur.close()
+            release_db_connection(conn)
+            return
+        
+        # CASO 3: Status sconosciuto
+        await update.message.reply_text(
+            f"⚠️ Status prenotazione sconosciuto: {status}\n"
+            f"Contatta l'amministratore."
         )
-        conn.commit()
         cur.close()
         release_db_connection(conn)
-        
-        await update.message.reply_text(
-            f"✅ PRENOTAZIONE CANCELLATA\n\n"
-            f"#{booking_id} - {class_name}\n"
-            f"📅 {class_date} ore {class_time}"
-        )
         
     except Exception as e:
         logger.error(f"Errore cancellazione: {e}")
@@ -943,7 +1068,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/lista - Vedi tutte le prenotazioni\n"
         "   Mostra cosa hai in programma.\n\n"
         "/cancella <ID> - Cancella una prenotazione\n"
-        "   Esempio: /cancella 5\n\n"
+        "   Esempio: /cancella 5\n"
+        "   ⚠️ Se già prenotata, cancella anche su EasyFit!\n\n"
         "⏰ ORARI:\n"
         "Il bot è attivo dalle 8:00 alle 21:00 ogni giorno.\n"
         "Controlla ogni minuto se ci sono prenotazioni da fare.\n\n"
@@ -962,6 +1088,8 @@ def check_and_book(application):
     """
     Controlla e prenota lezioni
     Esegue nello scheduler ogni minuto (8-21)
+    
+    MODIFICATO: Salva easyfit_booking_id nel database
     """
     
     # Controlla se siamo nell'orario attivo (8-21 UTC)
@@ -1040,13 +1168,19 @@ def check_and_book(application):
                 success, status, response = book_course_easyfit(session, course_appointment_id)
                 
                 if success:
-                    # Aggiorna status nel database
+                    # Estrai ID dalla response
+                    easyfit_booking_id = None
+                    if response and isinstance(response, dict):
+                        easyfit_booking_id = response.get('id')
+                    
+                    # Aggiorna status E easyfit_booking_id nel database
                     cur.execute(
-                        "UPDATE bookings SET status = %s WHERE id = %s",
-                        (status, booking_id)
+                        "UPDATE bookings SET status = %s, easyfit_booking_id = %s WHERE id = %s",
+                        (status, easyfit_booking_id, booking_id)
                     )
                     conn.commit()
                     
+                    logger.info(f"💾 Salvato easyfit_booking_id: {easyfit_booking_id}")
                     logger.info(f"🎉 Prenotazione #{booking_id} completata - Status: {status}")
                 else:
                     # Prenotazione fallita
