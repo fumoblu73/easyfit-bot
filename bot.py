@@ -644,24 +644,14 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
     
-    # Recupera info corso padre per disponibilità
+    # Recupera il corso padre per info generali
     all_courses = context.user_data.get('courses', [])
     course_name = context.user_data.get('class_name', '')
     
-    booked_participants = None
-    max_participants = None
-    waiting_list_active = False
-    waiting_list_participants = None
-    max_waiting_list_participants = None
-    
-    # Trova il corso corrispondente
+    parent_course = None
     for course in all_courses:
         if course.get('name') == course_name:
-            booked_participants = course.get('bookedParticipants')
-            max_participants = course.get('maxParticipants')
-            waiting_list_active = course.get('waitingListActive', False)
-            waiting_list_participants = course.get('waitingListParticipants')
-            max_waiting_list_participants = course.get('maxWaitingListParticipants')
+            parent_course = course
             break
     
     for slot in date_slots:
@@ -692,19 +682,29 @@ async def date_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if firstname or lastname:
                         instructor_name = f" • {firstname} {lastname}".strip()
             
-            # Determina status da mostrare
-            if hours_until > 72:
-                # Caso 1: Oltre 72 ore
-                status = "🟢 Prenotabile"
-            elif booked_participants is not None and max_participants is not None and booked_participants < max_participants:
-                # Caso 2: Entro 72 ore con posti liberi
-                status = "✅ Posti liberi"
-            elif waiting_list_active and waiting_list_participants is not None and max_waiting_list_participants is not None and waiting_list_participants < max_waiting_list_participants:
-                # Caso 3: Entro 72 ore, piena ma lista d'attesa disponibile
-                status = "⏳ Lista d'attesa"
+            # DETERMINA STATUS - USA DATI DEL CORSO PADRE (non dello slot)
+            if parent_course:
+                booked_participants = parent_course.get('bookedParticipants', 0)
+                max_participants = parent_course.get('maxParticipants', 0)
+                waiting_list_active = parent_course.get('waitingListActive', False)
+                waiting_list_participants = parent_course.get('waitingListParticipants', 0)
+                max_waiting_list_participants = parent_course.get('maxWaitingListParticipants', 0)
+                
+                if hours_until > 72:
+                    # Caso 1: Oltre 72 ore
+                    status = "🟢 Prenotabile"
+                elif booked_participants < max_participants:
+                    # Caso 2: Entro 72 ore con posti liberi
+                    status = "✅ Posti liberi"
+                elif waiting_list_active and waiting_list_participants < max_waiting_list_participants:
+                    # Caso 3: Entro 72 ore, piena ma lista d'attesa disponibile
+                    status = "⏳ Lista d'attesa"
+                else:
+                    # Caso 4: Entro 72 ore, completa (piena + lista piena o non attiva)
+                    status = "🚫 Completa"
             else:
-                # Caso 4: Entro 72 ore, completa (piena + lista piena o non attiva)
-                status = "🚫 Completa"
+                # Fallback se non troviamo il corso padre
+                status = "🟢 Prenotabile" if hours_until > 72 else "❓ Verifica app"
             
             button_text = f"🕐 {time_str}{instructor_name} ({status})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f'time_{time_str}')])
