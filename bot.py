@@ -552,11 +552,18 @@ async def prenota(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 courses_by_name[name] = []
             courses_by_name[name].append(course)
         
-        # Crea bottoni per nomi corsi (SENZA CONTEGGIO)
+        # Crea mapping indice -> nome corso
+        course_types = sorted(courses_by_name.keys())
+        course_types_mapping = {i: name for i, name in enumerate(course_types)}
+        
+        # Salva mapping in context
+        context.user_data['course_types'] = course_types_mapping
+        
+        # Crea bottoni con indici corti
         keyboard = []
-        for course_name in sorted(courses_by_name.keys()):
+        for index, course_name in course_types_mapping.items():
             button_text = f"📚 {course_name}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f'class_{course_name}')])
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f'type_{index}')])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -580,7 +587,17 @@ async def class_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    class_name = query.data.split('_', 1)[1]
+    # Recupera indice dal callback_data
+    type_index = int(query.data.split('_', 1)[1])
+    
+    # Recupera nome corso dal mapping
+    course_types_mapping = context.user_data.get('course_types', {})
+    class_name = course_types_mapping.get(type_index)
+    
+    if not class_name:
+        await query.edit_message_text("❌ Errore: tipo di corso non trovato.")
+        return
+    
     context.user_data['class_name'] = class_name
     
     # Filtra lezioni per questo nome e raggruppa per data
@@ -1288,7 +1305,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     
     # Callback handlers
-    application.add_handler(CallbackQueryHandler(class_selected, pattern="^class_"))
+    application.add_handler(CallbackQueryHandler(class_selected, pattern="^type_"))
     application.add_handler(CallbackQueryHandler(date_selected, pattern="^date_"))
     application.add_handler(CallbackQueryHandler(time_selected, pattern="^time_"))
     
