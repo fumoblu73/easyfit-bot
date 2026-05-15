@@ -541,19 +541,12 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_str = query.data.split('_')[1]
     context.user_data['time'] = time_str
 
-    # L'orario selezionato è in ora italiana (come mostrato nel calendario)
     class_datetime_naive = datetime.strptime(
         f"{context.user_data['date']} {time_str}",
         '%Y-%m-%d %H:%M'
     )
-
-    # Localizza in ora italiana (pytz gestisce automaticamente CET/CEST)
     class_datetime_rome = ROME_TZ.localize(class_datetime_naive)
-
-    # Sottrai 72 ore mantenendo il timezone
     booking_datetime_rome = class_datetime_rome - timedelta(hours=72)
-
-    # Converti in UTC per salvare nel database
     booking_datetime_utc = booking_datetime_rome.astimezone(pytz.utc)
 
     try:
@@ -627,7 +620,6 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
         future_bookings = []
         for booking in bookings:
             booking_id, class_name, class_date, class_time, booking_date, status = booking
-            # Localizza in ora italiana e converti in UTC
             class_datetime_naive = datetime.strptime(f"{class_date} {class_time}", '%Y-%m-%d %H:%M')
             class_datetime_rome = ROME_TZ.localize(class_datetime_naive)
             class_datetime_utc = class_datetime_rome.astimezone(pytz.utc)
@@ -657,7 +649,6 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 booking_id, class_name, class_date, class_time, booking_date, status = booking
                 date_obj = datetime.strptime(str(class_date), '%Y-%m-%d')
                 day_name = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'][date_obj.weekday()]
-                # Converti booking_date in ora italiana con pytz
                 if booking_date.tzinfo is None:
                     booking_date = booking_date.replace(tzinfo=pytz.utc)
                 booking_date_ita = booking_date.astimezone(ROME_TZ)
@@ -822,13 +813,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =============================================================================
 
 def check_and_book(application):
+    """
+    Controlla e prenota lezioni.
+    Viene chiamato dallo scheduler già filtrato per orario 8-21 Europe/Rome,
+    quindi non serve un controllo orario interno.
+    """
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
-    current_hour = now_utc.hour
-    if not (8 <= current_hour < 21):
-        return
+
     logger.info(f"🔍 CONTROLLO PRENOTAZIONI")
     logger.info(f"⏰ Ora UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"⏰ Ora ITA: {now_utc.astimezone(ROME_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
+
     try:
         conn = get_db_connection()
         cur = conn.cursor()
